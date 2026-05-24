@@ -148,6 +148,17 @@ our @stdTestsExt = qw(
     SELECT_SUM_RANGES_MODIFIABLE
     PARSER
     PARSER-RO
+    POINTS-COVERED-PK
+    POINTS-COVERED-SI
+    POINTS-NOTCOVERED-PK
+    POINTS-NOTCOVERED-SI
+    RANGE-COVERED-PK
+    RANGE-COVERED-SI
+    RANGE-NOTCOVERED-PK
+    RANGE-NOTCOVERED-SI
+    SCAN
+    RANDOM-POINTS
+    HOT-POINTS
 );
 
 #-----------------------------------------------------------------------------
@@ -265,6 +276,7 @@ our %tsOpt = (
     "oltp_order_ranges"              => undef,
     "oltp_point_selects"             => undef,
     "oltp_simple_ranges"             => undef,
+    "random_points_ranges"           => undef,
     "oltp_skip_trx"                  => undef,
     "oltp_sum_ranges"                => undef,
     "pre_test_done"                  => undef,
@@ -908,6 +920,40 @@ sub Help {
     Print("\tare included in each request.");
     Print("\tExample: To run 3 simple-range queries per request instead of 1,");
     Print("\tset: sysbench_lua.oltp_simple_ranges=3\n");
+    
+    Print("\tPOINTS-COVERED-PK \n");
+    Print("\tsysbench_lua.random_points_ranges\n");
+   
+    Print("\tPOINTS-COVERED-SI \n");
+    Print("\tsysbench_lua.random_points_ranges\n");
+
+    Print("\tPOINTS-NOTCOVERED-PK \n");
+    Print("\t\tsybench_lua.random_points_ranges\n");
+
+    Print("\tPOINTS-NOTCOVERED-SI \n");
+    Print("\t\tysbench_lua.random_points_ranges\n");
+
+
+    Print("\tRANGE-COVERED-PK \n");
+    Print("\t\tsysbench_lua.random_points_ranges\n");
+
+    Print("\tRANGE-COVERED-SI \n");
+    Print("\t\tsysbench_lua.random_points_ranges\n");
+
+    
+    Print("\tRANGE-NOTCOVERED-PK \n");
+    Print("\t\tsysbench_lua.random_points_ranges\n");
+
+    Print("\tRANGE-NOTCOVERED-SI \n");
+    Print("\t\tsysbench_lua.random_points_ranges\n");
+
+    Print("\tSCAN \n");
+
+    Print("\tRANDOM-POINTS \n");
+    Print("\t\tysbench_lua.random_points_ranges\n");
+    
+    Print("\tHOT-POINTS \n");
+    Print("\t\tsysbench_lua.random_points_ranges\n");
 
     Print("\tPOINT_SELECT_MODIFIABLE:");
     Print("\t\tsysbench_lua.oltp_point_selects\n");
@@ -1841,7 +1887,7 @@ sub ConfigureStdTestCase{
             $tsOpt{test_args} .= " --non-index-updates=$tsOpt{oltp_non_index_updates}";
         }
         $tsOpt{test_args} .= " --delete-inserts=$tsOpt{oltp_del_ins}";
-    
+    # OLTP_RO_MODIFIABLE
     } elsif ($test_uc eq "OLTP_RO_MODIFIABLE") {
         $tsOpt{oltp_lua_script} = "oltp_read_only.lua";
         $tsOpt{test_args}  = " --skip-trx=$trx_flag";
@@ -1850,7 +1896,74 @@ sub ConfigureStdTestCase{
         $tsOpt{test_args} .= " --sum-ranges=$tsOpt{oltp_sum_ranges}";
         $tsOpt{test_args} .= " --order-ranges=$tsOpt{oltp_order_ranges}";
         $tsOpt{test_args} .= " --distinct-ranges=$tsOpt{oltp_distinct_ranges}";
-    
+    #POINTS-COVERED-PK 
+    } elsif ($test_uc eq "POINTS-COVERED-PK") {
+        $tsOpt{oltp_lua_script} = "oltp_points_covered.lua";
+        $tsOpt{test_args}  = " --skip-trx";
+        $tsOpt{test_args} .= " --on-id=true";
+        $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
+    #POINTS-COVERED-SI     
+    } elsif ($test_uc eq "POINTS-COVERED-SI") {
+        $tsOpt{oltp_lua_script} = "oltp_points_covered.lua";
+        $tsOpt{test_args}  = " --skip-trx";
+        $tsOpt{test_args} .= " --on-id=false";
+        $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
+    #POINTS-NOTCOVERED-PK      
+    } elsif ($test_uc eq "POINTS-NOTCOVERED-PK") {
+        $tsOpt{oltp_lua_script} = "oltp_points_covered.lua";
+        $tsOpt{test_args}  = " --skip-trx";
+        $tsOpt{test_args} .= " --on-id=true";
+        $tsOpt{test_args} .= " --covered=false";
+        $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
+    #POINTS-NOTCOVERED-SI
+    } elsif ($test_uc eq "POINTS-NOTCOVERED-SI") {
+        $tsOpt{oltp_lua_script} = "oltp_points_covered.lua";
+        $tsOpt{test_args}  = " --skip-trx";
+        $tsOpt{test_args} .= " --on-id=false";
+        $tsOpt{test_args} .= " --covered=false";
+        $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
+    #RANGE-COVERED-PK 
+    } elsif ($test_uc eq "RANGE-COVERED-PK") {
+        $tsOpt{oltp_lua_script} = "oltp_range_covered.lua";
+        $tsOpt{test_args}  = " --skip-trx";
+        $tsOpt{test_args} .= " --on-id=true";
+        $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
+    #RANGE-COVERED-SI     
+    } elsif ($test_uc eq "RANGE-COVERED-SI") {
+        $tsOpt{oltp_lua_script} = "oltp_range_covered.lua";
+        $tsOpt{test_args}  = " --skip-trx";
+        $tsOpt{test_args} .= " --on-id=false";
+        $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
+    #RANGE-NOTCOVERED-PK      
+    } elsif ($test_uc eq "RANGE-NOTCOVERED-PK") {
+        $tsOpt{oltp_lua_script} = "oltp_range_covered.lua";
+        $tsOpt{test_args}  = " --skip-trx";
+        $tsOpt{test_args} .= " --on-id=true";
+        $tsOpt{test_args} .= " --covered=false";
+        $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
+    #RANGE-NOTCOVERED-SI
+    } elsif ($test_uc eq "RANGE-NOTCOVERED-SI") {
+        $tsOpt{oltp_lua_script} = "oltp_range_covered.lua";
+        $tsOpt{test_args}  = " --skip-trx";
+        $tsOpt{test_args} .= " --on-id=false";
+        $tsOpt{test_args} .= " --covered=false";
+        $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
+    #SCAN
+    } elsif ($test_uc eq "SCAN") {
+        $tsOpt{oltp_lua_script} = "oltp_scan.lua";
+        $tsOpt{test_args}  = " ";
+    #RANDOM-POINTS
+    } elsif ($test_uc eq "RANDOM-POINTS") {
+        $tsOpt{oltp_lua_script} = "oltp_inlist_select.lua";
+        $tsOpt{test_args}  = " --skip-trx";
+        $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
+    #HOT-POINTS
+    } elsif ($test_uc eq "HOT-POINTS") {
+        $tsOpt{oltp_lua_script} = "oltp_inlist_select.lua";
+        $tsOpt{test_args}  = " --skip-trx";
+        $tsOpt{test_args}  = " --hot-points";
+        $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
+    #OLTP_RW_PS_ONLY_MODIFIABLE
     } elsif ($test_uc eq "OLTP_RW_PS_ONLY_MODIFIABLE") {
         $tsOpt{oltp_lua_script} = "oltp_read_write.lua";
         $tsOpt{test_args}  = " --skip-trx=$trx_flag";
@@ -1860,7 +1973,7 @@ sub ConfigureStdTestCase{
         $tsOpt{test_args} .= " --non-index-updates=$tsOpt{oltp_non_index_updates}";
         $tsOpt{test_args} .= " --delete-inserts=$tsOpt{oltp_del_ins}";
         $tsOpt{test_args} .= " --update-range-size=$tsOpt{bmk_update_range_size}" if $use_bmk;
-    
+    #UPDATE_KEY_TRANSACTIONAL_MODIFIABLE
     } elsif ($test_uc eq "UPDATE_KEY_TRANSACTIONAL_MODIFIABLE") {
         $tsOpt{oltp_lua_script} = "oltp_update_index.lua";
         $tsOpt{test_args}  = " --skip-trx=$trx_flag";
@@ -1870,7 +1983,7 @@ sub ConfigureStdTestCase{
         $tsOpt{test_args} .= " --non-index-updates=0";
         $tsOpt{test_args} .= " --delete-inserts=0";
         $tsOpt{test_args} .= " --update-range-size=$tsOpt{bmk_update_range_size}" if $use_bmk;
-    
+    #UPDATE_NO_KEY_TRANSACTIONAL_MODIFIABLE
     } elsif ($test_uc eq "UPDATE_NO_KEY_TRANSACTIONAL_MODIFIABLE") {
         $tsOpt{oltp_lua_script} = "oltp_update_non_index.lua";
         $tsOpt{test_args}  = " --skip-trx=$trx_flag";
@@ -1880,7 +1993,7 @@ sub ConfigureStdTestCase{
         $tsOpt{test_args} .= " --non-index-updates=$tsOpt{oltp_non_index_updates}";
         $tsOpt{test_args} .= " --delete-inserts=0";
         $tsOpt{test_args} .= " --update-range-size=$tsOpt{bmk_update_range_size}" if $use_bmk;
-    
+    #UPDATE_KEY_NO_KEY_INT_TRANSACTIONAL_MODIFIABLE
     } elsif ($test_uc eq "UPDATE_KEY_NO_KEY_INT_TRANSACTIONAL_MODIFIABLE") {
         $tsOpt{oltp_lua_script} = "oltp_update_non_index.lua";
         $tsOpt{test_args}  = " --skip-trx=$trx_flag";
