@@ -3,7 +3,7 @@ package TAF::DatabaseSoftwareInstalls;
 # TAF::DatabaseSoftwareInstalls
 #
 # Created: Nov 2025
-# Last Modified: March 2026
+# Last Modified: May 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -120,7 +120,7 @@ use TAF::Utilities qw(PluginAliases PluginBinPriority);
 require toolsLib;
 
 use constant TAF_DBSI => 'TAF::DatabaseSoftwareInstalls -> ';
-our $VERSION = '2.5';
+our $VERSION = '2.6';
 
 # Local working state for install/update operations
 # This is NOT part of the TAF context and must never be persisted.
@@ -356,14 +356,14 @@ sub DoInstall {
     
     if (-d $final_install_path) {
         Print("");
-        Print("/tERROR: Install directory already exists:");
-        Print("/t         $final_install_path");
+        Print("\tERROR: Install directory already exists: $final_install_path");
         Print("");
-        Print("/tRefusing to install.");
-        Print("/tYou must either:");
-        Print("/t   1. Use the existing install");
-        Print("/t   2. Remove/delete the existing install");
-        Print("/t   3. Or run an update via --db-software-update-install");
+        Print("\tRefusing to install.");
+        Print("");
+        Print("\tYou must either:");
+        Print("\t 1. Use the existing install");
+        Print("\t 2. Remove/delete the existing install");
+        Print("\t 3. Or run an update via --db-software-update-install");
         Print("");
         return ERROR;
     }
@@ -497,6 +497,10 @@ sub HandleInstallMaintenanceFlags {
             main::QuickExit("\nERROR: --db-software-install requires --db-software-install-packages\n");
         }
 
+        # Expand leading ~ to HOME for convenience
+        if ($options_ref->{db_software_install_packages} =~ m{^~}) {
+            $options_ref->{db_software_install_packages} =~ s{^~}{$ENV{HOME}};
+        }
         my $rc = DoInstall($ctx);
 
         if ($rc != OK) {
