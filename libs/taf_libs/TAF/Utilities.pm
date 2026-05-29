@@ -800,7 +800,7 @@ sub GetHostName {
         PrintVerbose($ghn . "Host option provided: " . $host);
 
         if ($host eq 'localhost' || $host eq '127.0.0.1') {
-            my $resolved = toolsLib::GetHostName();
+            my $resolved = toolsLib::GetCurrentHostName();
             PrintVerbose($ghn . " Localhost detected, resolved to " . $resolved);
             $host = $resolved;
         }

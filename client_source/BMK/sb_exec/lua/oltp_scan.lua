@@ -34,6 +34,7 @@ end
 function event()
    local table_num = (sysbench.tid % sysbench.opt.tables) + 1
    local table_name = "sbtest" .. table_num
+   sysbench.opt.reconnect=0
    -- local start_secs = os.time()
    -- local stop_secs = start_secs
 
@@ -42,4 +43,14 @@ function event()
    con:query(string.format("SELECT * from %s WHERE LENGTH(c) < 0", table_name))
    -- stop_secs = os.time()      
    -- end
+end
+function check_reconnect()
+  if( sysbench.opt.reconnect > 0 ) then
+    events = (events or 0) + 1
+
+    if( events >= sysbench.opt.reconnect ) then
+      events = 0
+      do_reconnect()
+    end
+  end
 end
