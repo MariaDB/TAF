@@ -2,8 +2,8 @@
 # sysbench-lua.pm - Sysbench Lua + BMK Test Suite for TAF
 #
 # Created: September 2025
-# Last Modified: March 2026
-# Version: 1.1
+# Last Modified: May 2026
+# Version: 1.2
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -82,7 +82,7 @@
 ## --------------------------------------------------------------------------
 our $properties_prefix = "sysbench_lua";
 our $ts_version        = 1;
-our $ts_revision       = 0;
+our $ts_revision       = 2;
 our $ts_type           = "benchmark";
 our $client_version    = "Sysbench-1.0";
 our $ctx               = undef;
@@ -132,33 +132,35 @@ our @stdTests = qw(
 #-----------------------------------------------------------------------------
 our @stdTestsExt = qw(
     DELETE
+    HOT-POINTS
     INSERT
     OLTP_INSERT_INTO
     OLTP_RO_MODIFIABLE
     OLTP_RW_MODIFIABLE
     OLTP_WO_MODIFIABLE
     OLTP_RW_PS_ONLY_MODIFIABLE
-    UPDATE_KEY_TRANSACTIONAL_MODIFIABLE
-    UPDATE_NO_KEY_TRANSACTIONAL_MODIFIABLE
-    UPDATE_KEY_NO_KEY_INT_TRANSACTIONAL_MODIFIABLE
-    POINT_SELECT_MODIFIABLE
-    SELECT_DISTINCT_RANGES_MODIFIABLE
-    SELECT_ORDER_RANGES_MODIFIABLE
-    SELECT_SIMPLE_RANGES_MODIFIABLE
-    SELECT_SUM_RANGES_MODIFIABLE
     PARSER
     PARSER-RO
+    POINT_SELECT_MODIFIABLE
     POINTS-COVERED-PK
     POINTS-COVERED-SI
     POINTS-NOTCOVERED-PK
     POINTS-NOTCOVERED-SI
+    RANDOM-POINTS
     RANGE-COVERED-PK
     RANGE-COVERED-SI
     RANGE-NOTCOVERED-PK
     RANGE-NOTCOVERED-SI
     SCAN
-    RANDOM-POINTS
-    HOT-POINTS
+    SELECT_DISTINCT_RANGES_MODIFIABLE
+    SELECT_ORDER_RANGES_MODIFIABLE
+    SELECT_SIMPLE_RANGES_MODIFIABLE
+    SELECT_SUM_RANGES_MODIFIABLE
+    TPCB_KEY
+    TPCB_NO_KEY
+    UPDATE_KEY_TRANSACTIONAL_MODIFIABLE
+    UPDATE_NO_KEY_TRANSACTIONAL_MODIFIABLE
+    UPDATE_KEY_NO_KEY_INT_TRANSACTIONAL_MODIFIABLE
 );
 
 #-----------------------------------------------------------------------------
@@ -2003,7 +2005,30 @@ sub ConfigureStdTestCase{
         $tsOpt{test_args} .= " --non-index-updates=$tsOpt{oltp_non_index_updates}";
         $tsOpt{test_args} .= " --delete-inserts=0";
         $tsOpt{test_args} .= " --update-range-size=$tsOpt{bmk_update_range_size}" if $use_bmk;
-    
+    # Simulate TPC-B using update to key
+    } elsif ($test_uc eq "TPCB_KEY") {
+        $tsOpt{oltp_lua_script} = "oltp_read_write.lua";
+        $tsOpt{test_args}  = " --skip-trx=$trx_flag";
+        $tsOpt{test_args} .= " --point-selects=3 ";
+        $tsOpt{test_args} .= " --simple-ranges=0";
+        $tsOpt{test_args} .= " --sum-ranges=0";
+        $tsOpt{test_args} .= " --order-ranges=0";
+        $tsOpt{test_args} .= " --distinct-ranges=0";
+        $tsOpt{test_args} .= " --index-updates=1 ";
+        $tsOpt{test_args} .= " --non-index-updates=0";
+        $tsOpt{test_args} .= " --delete-inserts=1";
+    # Simulate TPC-B using update to no key value
+    }  elsif ($test_uc eq "TPCB_NO_KEY") {
+        $tsOpt{oltp_lua_script} = "oltp_read_write.lua";
+        $tsOpt{test_args}  = " --skip-trx=$trx_flag";
+        $tsOpt{test_args} .= " --point-selects=3 ";
+        $tsOpt{test_args} .= " --simple-ranges=0";
+        $tsOpt{test_args} .= " --sum-ranges=0";
+        $tsOpt{test_args} .= " --order-ranges=0";
+        $tsOpt{test_args} .= " --distinct-ranges=0";
+        $tsOpt{test_args} .= " --index-updates=0 ";
+        $tsOpt{test_args} .= " --non-index-updates=1";
+        $tsOpt{test_args} .= " --delete-inserts=1";
     } else {
         PrintError($_cstc." Invalid test: $test");
         return ERROR;
