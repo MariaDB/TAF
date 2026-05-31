@@ -3,7 +3,7 @@
 #
 # Created: September 2025
 # Last Modified: May 2026
-# Version: 1.2
+# Version: 1.3
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -82,7 +82,7 @@
 ## --------------------------------------------------------------------------
 our $properties_prefix = "sysbench_lua";
 our $ts_version        = 1;
-our $ts_revision       = 2;
+our $ts_revision       = 3;
 our $ts_type           = "benchmark";
 our $client_version    = "Sysbench-1.0";
 our $ctx               = undef;
@@ -2014,7 +2014,7 @@ sub ConfigureStdTestCase{
         $tsOpt{test_args} .= " --sum-ranges=0";
         $tsOpt{test_args} .= " --order-ranges=0";
         $tsOpt{test_args} .= " --distinct-ranges=0";
-        $tsOpt{test_args} .= " --index-updates=1 ";
+        $tsOpt{test_args} .= " --index-updates=3 ";
         $tsOpt{test_args} .= " --non-index-updates=0";
         $tsOpt{test_args} .= " --delete-inserts=1";
     # Simulate TPC-B using update to no key value
@@ -2027,7 +2027,7 @@ sub ConfigureStdTestCase{
         $tsOpt{test_args} .= " --order-ranges=0";
         $tsOpt{test_args} .= " --distinct-ranges=0";
         $tsOpt{test_args} .= " --index-updates=0 ";
-        $tsOpt{test_args} .= " --non-index-updates=1";
+        $tsOpt{test_args} .= " --non-index-updates=3";
         $tsOpt{test_args} .= " --delete-inserts=1";
     } else {
         PrintError($_cstc." Invalid test: $test");
