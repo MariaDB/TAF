@@ -235,7 +235,7 @@ sub DbExecuteSqlFile {
     my $maker  = _NormalizeMaker($raw_maker);
     my $client = _FindClientBin($maker, $install_dir, $debug);
 
-    my $sql_cmd = "\\. $sql_file";
+    my $sql_cmd = '\\. '. $sql_file;
 
     my $cmd = _BuildCommand($client, $sql_cmd, $ctx);
 
@@ -581,13 +581,11 @@ sub _BuildCommand {
     } else {
         $cmd .= " --host=$host --port=$connection --protocol=tcp";
     }
-
+    my $maker = _NormalizeMaker($ctx->{taf_var}{db_maker});
     # SSL options (normalized earlier in TAF)
     if ($opt->{ssl_enabled}) {
 
-        my $maker = _NormalizeMaker($ctx->{taf_var}{db_maker});
-
-        if ($maker eq 'mariadb' || $maker eq 'mysql') {
+       if ($maker eq 'mariadb' || $maker eq 'mysql') {
             $cmd .= " --ssl-ca=$opt->{ssl_ca}"               if $opt->{ssl_ca};
             $cmd .= " --ssl-cert=$opt->{ssl_cert}"           if $opt->{ssl_cert};
             $cmd .= " --ssl-key=$opt->{ssl_key}"             if $opt->{ssl_key};
@@ -613,6 +611,9 @@ sub _BuildCommand {
                 $cmd .= " -W $opt->{ssl_wallet}";
             }
         }
+    }
+    if ($maker eq 'mysql') {
+        $cmd .= " --commands ";
     }
     $cmd .= " $extra" if $extra;
     $cmd .= " -e \"$sql\"";
