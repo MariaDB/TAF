@@ -2,8 +2,8 @@
 # sysbench-lua.pm - Sysbench Lua + BMK Test Suite for TAF
 #
 # Created: September 2025
-# Last Modified: May 2026
-# Version: 1.3
+# Last Modified: June 2026
+# Version: 1.4
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -82,7 +82,7 @@
 ## --------------------------------------------------------------------------
 our $properties_prefix = "sysbench_lua";
 our $ts_version        = 1;
-our $ts_revision       = 3;
+our $ts_revision       = 4;
 our $ts_type           = "benchmark";
 our $client_version    = "Sysbench-1.0";
 our $ctx               = undef;
@@ -266,6 +266,7 @@ our %tsOpt = (
     "intermediate_result"            => undef,
     "load_args"                      => undef,
     "lua_scripts_dir"                => undef,
+    "ignore_errors"                  => undef,
     "number_of_partitions"           => undef,
     "number_of_rows"                 => undef,
     "number_of_tables"               => undef,
@@ -2617,6 +2618,9 @@ sub SetConnectionArgs {
     if($tsOpt{forced_shutdown}){
        $args .= " --forced-shutdown=" . $tsOpt{forced_shutdown_sec} if defined $tsOpt{forced_shutdown_sec};
     }
+
+    # Errors to ignore
+    $args .= " --mysql-ignore-errors=" . $tsOpt{ignore_errors} if defined $tsOpt{ignore_errors};
 
     # Storage engine
     $args .= " --mysql-storage-engine=" . lc($options{db_engine}) if defined $options{db_engine};
