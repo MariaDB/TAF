@@ -410,9 +410,7 @@ sub SetLibAndInclude {
         return _SetLibAndInclude_MySQLFamily($installDir);
     }
     elsif ($maker eq 'postgres' || $maker eq 'postgresql') {
-        # TO BE ADDED
-        DebugPrint("ERROR: PostgreSQL client builds are not supported by this module");
-        return ERROR;
+        return _SetLibAndInclude_PostgreSQL($installDir);
     }
     elsif ($maker eq 'oracle') {
         # TO BE ADDED
@@ -753,7 +751,72 @@ sub _DetectMakerFromInstallDir {
         return $maker if $path =~ m{/\Q$maker\E[^/]*}i;
     }
 
+    # Fallback: probe for pg_config to detect system-package PostgreSQL (e.g. /usr)
+    my $pg_config = File::Spec->catfile($installDir, 'bin', 'pg_config');
+    return 'postgres' if -x $pg_config;
+
     return undef;
+}
+
+#-------------------------------------------------------------------------------
+# Subroutine: _SetLibAndInclude_PostgreSQL
+#
+# PURPOSE:
+#     Resolve include and library directories for PostgreSQL client builds
+#     using pg_config. Sets $ENV{INC} and $ENV{LIB} for use by cmake.
+#
+# PARAMETERS:
+#     $installDir  - Root of the PostgreSQL installation.
+#
+# RETURNS:
+#     OK    - INC and LIB resolved via pg_config.
+#     ERROR - pg_config not found or returned invalid paths.
+#-------------------------------------------------------------------------------
+sub _SetLibAndInclude_PostgreSQL {
+    my ($installDir) = @_;
+
+    DebugPrint("SetLibAndInclude - PostgreSQL family");
+
+    # Locate pg_config: first under installDir, then system-wide
+    my $pgConfig;
+    for my $candidate (
+        File::Spec->catfile($installDir, 'bin', 'pg_config'),
+        '/usr/bin/pg_config',
+    ) {
+        if (-x $candidate) {
+            $pgConfig = $candidate;
+            last;
+        }
+    }
+
+    unless ($pgConfig) {
+        DebugPrint("ERROR: pg_config not found under $installDir/bin or /usr/bin");
+        return ERROR;
+    }
+
+    DebugPrint("pg_config = $pgConfig");
+
+    my $includeDir = `$pgConfig --includedir 2>/dev/null`;
+    my $libDir     = `$pgConfig --libdir 2>/dev/null`;
+    chomp($includeDir);
+    chomp($libDir);
+
+    unless ($includeDir && -d $includeDir) {
+        DebugPrint("ERROR: pg_config --includedir returned invalid directory: '$includeDir'");
+        return ERROR;
+    }
+    unless ($libDir && -d $libDir) {
+        DebugPrint("ERROR: pg_config --libdir returned invalid directory: '$libDir'");
+        return ERROR;
+    }
+
+    $ENV{INC} = $includeDir;
+    $ENV{LIB} = $libDir;
+
+    DebugPrint("PostgreSQL INC = $includeDir");
+    DebugPrint("PostgreSQL LIB = $libDir");
+
+    return OK;
 }
 
 #############################################################################

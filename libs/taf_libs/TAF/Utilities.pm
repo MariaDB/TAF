@@ -177,8 +177,9 @@ our %PLUGIN_ALIASES = (
     mariadbd  => 'mariadb',
     mysql     => 'mysql',
     mysqld    => 'mysql',
-    postgres  => 'postgres',
-    pgsql     => 'postgres',
+    postgres   => 'postgres',
+    pgsql      => 'postgres',
+    postgresql => 'postgres',
     oracle    => 'oracle',
     sqlplus   => 'oracle',
 );
