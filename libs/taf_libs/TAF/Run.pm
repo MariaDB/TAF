@@ -154,7 +154,7 @@ use TAF::Utilities qw(
     ExecuteOsScript
 );
 use constant TAF_RUN => 'TAF::Run::';
-our $VERSION = '2.5';
+our $VERSION = '3.0';
 
 #===============================================================================
 #                            Exports
@@ -754,10 +754,21 @@ sub MainTestSetup {
     PrintVerbose("$mts2 Duration:        $elapsed seconds");
 
     # Optional post-setup sleep
-    CheckDbRestOrSleep($ctx,$mts2."sleep_after_test_setup", $opts->{sleep_after_test_setup});
+    
+    $rc = CheckDbRestOrSleep($ctx,
+                             $mts2."sleep_after_test_setup", 
+                             $opts->{sleep_after_test_setup});
+    # Check return
+    if ($rc != OK) {
+        PrintError($mts."CheckDbRestOrSleep returned failed");
+        return ERROR;
+    }
+    
 
     # Check to see if SQL File to run
-    return ERROR if MaybeExecuteSqlHook($ctx, "exec_sql_file_after_test_setup", $results_dir) != OK;
+    return ERROR if MaybeExecuteSqlHook($ctx, 
+                                        "exec_sql_file_after_test_setup", 
+                                        $results_dir) != OK;
 
     StageEnd($mts);
     return OK;
@@ -945,9 +956,15 @@ sub MainTestRun {
     }
 
     # Check for break between
-    CheckDbRestOrSleep($ctx,
-                       $mtr2."sleep_after_test_run", 
-                       $opts->{sleep_after_test_run});
+    $returnCode = CheckDbRestOrSleep($ctx,
+                                     $mtr2."sleep_after_test_run", 
+                                     $opts->{sleep_after_test_run});
+
+    # Check return
+    if ($returnCode != OK) {
+        PrintError($mtr2."CheckDbRestOrSleep returned failed");
+        return ERROR;
+    }
 
     StageEnd($mtr);
     return OK;
@@ -1968,7 +1985,9 @@ sub GetRunCount {
 #
 # BEHAVIOR:
 #     - Short-circuits immediately when db_process_rest_enable is false.
-#     - Validates that a runtime PID is available in taf_var->{db_pid}.
+#     - Validates that a runtime PID is available in taf_var->{db_pid}, or
+#       falls back to the new db_process_pid option when DB was started
+#       outside the current TAF run.
 #     - Constructs a complete argument set for WatchDbCpuUsage().
 #     - Invokes the CPU monitor and interprets its OK/ERROR result.
 #     - Emits contributor-safe diagnostics for all failure modes.
@@ -2000,20 +2019,35 @@ sub WatchDbProcessForRest {
     # Feature disabled
     return OK unless $opt->{db_process_rest_enable};
 
-    my $wdbp = StageStart(TAF_RUN."WatchDbProcessForRest");
+    my $wdbp = StageStart(TAF_RUN . "WatchDbProcessForRest");
+
+    # Primary PID source: DB started by TAF
     my $pid = $taf_var_ref->{db_pid};
-    unless (defined $pid && $pid =~ /^\d+$/) {
-        PrintError("WatchDbProcessForRest: invalid or missing PID");
+
+    # Fallback PID source: user-supplied option
+    if (!defined($pid) || $pid !~ /^\d+$/) {
+        if (defined($opt->{db_process_pid}) && $opt->{db_process_pid} =~ /^\d+$/) {
+            $pid = $opt->{db_process_pid};
+            PrintVerbose("WatchDbProcessForRest: using user-supplied PID $pid");
+        }
+    }
+
+    # If still no valid PID, fail cleanly
+    unless (defined($pid) && $pid =~ /^\d+$/) {
+        PrintError("WatchDbProcessForRest: invalid or missing PID (TAF db_pid undefined and no --db-process-pid provided)");
+        StageEnd($wdbp);
         return ERROR;
     }
 
-    my $rc = toolsLib::WatchDbCpuUsage(pid          => $pid,
-                                       low          => $opt->{db_process_rest_low},
-                                       high         => $opt->{db_process_rest_high},
-                                       consecutive  => $opt->{db_process_rest_consecutive},
-                                       max_attempts => $opt->{db_process_rest_max_attempts},
-                                       interval     => $opt->{db_process_rest_interval},
-                                       verbose      => $opt->{tools_debug},);
+    my $rc = toolsLib::WatchDbCpuUsage(
+        pid          => $pid,
+        low          => $opt->{db_process_rest_low},
+        high         => $opt->{db_process_rest_high},
+        consecutive  => $opt->{db_process_rest_consecutive},
+        max_attempts => $opt->{db_process_rest_max_attempts},
+        interval     => $opt->{db_process_rest_interval},
+        verbose      => $opt->{tools_debug},
+    );
 
     if ($rc == OK) {
         PrintVerbose("DB process reached rest state.");
@@ -2022,6 +2056,7 @@ sub WatchDbProcessForRest {
     }
 
     PrintError("DB process did not reach rest state (or disappeared) during monitoring.");
+    StageEnd($wdbp);
     return ERROR;
 }
 
@@ -2083,6 +2118,15 @@ sub CheckDbRestOrSleep {
 
     # CPU rest detection enabled -> need PID
     my $pid = $taf_var->{db_pid};
+    
+    # Fallback PID
+    if (!defined($pid) || $pid !~ /^\d+$/) {
+        if (defined($opt->{db_process_pid}) && $opt->{db_process_pid} =~ /^\d+$/) {
+            $pid = $opt->{db_process_pid};
+            PrintVerbose("CheckDbRestOrSleep: using user-supplied PID $pid");
+        }
+    }
+    
     unless (defined $pid && $pid =~ /^\d+$/) {
         PrintError("CheckDbRestOrSleep: CPU rest enabled but PID missing");
         return ERROR;

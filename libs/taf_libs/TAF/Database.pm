@@ -3,7 +3,7 @@ package TAF::Database;
 # TAF::Database
 #
 # Created: December 2025
-# Last Modified: March 2026
+# Last Modified: June 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -116,7 +116,7 @@ use TAF::Utilities qw(
 );
 
 use constant TAF_DATABASE => 'TAF::Database-> ';
-our $VERSION = '2.5';
+our $VERSION = '3.0';
 
 #===============================================================================
 #                              Exports
@@ -1068,46 +1068,29 @@ sub _DiscoverDbReachability {
 #     to the active plugin. This routine does not modify state; it only observes
 #     and reports what is running and whether clean shutdown might be possible.
 #
+#     Updated to support the new db_runtime_dir property.
+#     Runtime directory detection now follows this precedence:
+#
+#         1. taf.db_runtime_dir (user-specified)
+#         2. tmp_dir (legacy fallback)
+#
 # PARAMETERS:
-#     $ctx  - Full TAF context hashref containing:
-#                 { options => {}, dirs => {}, flags => {}, obj => {}, taf_var => {} }
+#     $ctx  - Full TAF context hashref.
 #
 # BEHAVIOR:
-#     - Retrieve runtime path hints from the plugin if available.
-#     - Determine tmp_dir, datadir, socket, port, and pid_file from plugin
-#       runtime paths or from TAF options.
-#     - Determine the process signature from the plugin if provided, otherwise
-#       default to "mysqld".
+#     - Determine runtime_dir, datadir, socket, port from TAF options.
+#     - Determine process signature from plugin or default to "mysqld".
 #     - Enumerate OS processes and identify those matching the signature.
 #     - For each matching process:
-#           * Determine ownership based on runtime path artifacts.
-#           * Determine reachability based on plugin capabilities or available
-#             runtime artifacts.
-#           * Record PID, command line, ownership, reachability, and reason.
-#     - Classify overall database state into one of:
-#           DB_STATE_NONE
-#           DB_STATE_ONE_REACHABLE
-#           DB_STATE_ONE_UNREACHABLE
-#           DB_STATE_MULTI_SOME_REACHABLE
-#           DB_STATE_MULTI_NONE_REACHABLE
+#           * Determine ownership based on runtime_dir, datadir, or socket.
+#           * Determine reachability based on available runtime artifacts.
+#     - Classify overall database state.
 #
 # RETURNS:
-#     In list context:
-#         ($state, $info_ref)
-#
-#     $state    - One of the DB_STATE_* constants listed above.
-#     $info_ref - Hashref containing:
-#                     total_instances  => <int>
-#                     reachable_count  => <int>
-#                     instances        => [ { pid, cmd, owned, reachable, reason }, ... ]
-#
-# SIDE EFFECTS:
-#     None. This routine performs no shutdown attempts and does not modify
-#     framework state.
+#     ($state, $info_ref)
 #
 # NOTES:
-#     - "Reachable" means that enough runtime artifacts exist to attempt a clean
-#       shutdown, not that the database is responding to ping.
+#     - No plugin callbacks are required.
 #     - This routine is observational only and must remain deterministic.
 #===============================================================================
 sub _EnsureDbStarted {
@@ -1116,19 +1099,29 @@ sub _EnsureDbStarted {
     my $options = $ctx->{options};
     my $plugin  = $ctx->{obj}{db_plugin};
 
-    my %rt = ();
-    %rt = %{$plugin->runtime_paths()} if $plugin && $plugin->can('runtime_paths');
+    #---------------------------------------------------------------------------
+    # Resolve runtime directory (new property)
+    #---------------------------------------------------------------------------
+    my $runtime_dir = $options->{db_runtime_dir} // $options->{tmp_dir};
 
-    my $tmp_dir  = $rt{tmp_dir}   // $options->{tmp_dir};
-    my $datadir  = $rt{datadir}   // $options->{db_data_dir};
-    my $socket   = $rt{socket}    // $options->{db_socket};
-    my $port     = $rt{port}      // $options->{db_port};
-    my $pid_file = $rt{pid_file};
+    #---------------------------------------------------------------------------
+    # Resolve other runtime artifacts
+    #---------------------------------------------------------------------------
+    my $datadir  = $options->{db_data_dir};
+    my $socket   = $options->{db_socket};
+    my $port     = $options->{db_port};
+    my $pid_file = undef;   # plugins may override later
 
+    #---------------------------------------------------------------------------
+    # Determine process signature
+    #---------------------------------------------------------------------------
     my $sig = ($plugin && $plugin->can('process_signature'))
               ? $plugin->process_signature()
               : 'mysqld';
 
+    #---------------------------------------------------------------------------
+    # Enumerate OS processes
+    #---------------------------------------------------------------------------
     my @instances;
     my @ps_out = `ps -eo pid,cmd`;
 
@@ -1143,23 +1136,31 @@ sub _EnsureDbStarted {
         my $reachable = 0;
         my $reason    = '';
 
+        #-----------------------------------------------------------------------
         # Ownership heuristics
-        if (defined $tmp_dir && $cmd =~ /\Q$tmp_dir\E/) {
+        #-----------------------------------------------------------------------
+        if (defined $runtime_dir && $cmd =~ /\Q$runtime_dir\E/) {
             $owned = 1;
-        } elsif (defined $datadir && $cmd =~ /--datadir=\Q$datadir\E/) {
+        }
+        elsif (defined $datadir && $cmd =~ /--datadir=\Q$datadir\E/) {
             $owned = 1;
-        } elsif (defined $socket && $cmd =~ /--socket=\Q$socket\E/) {
+        }
+        elsif (defined $socket && $cmd =~ /--socket=\Q$socket\E/) {
             $owned = 1;
         }
 
+        #-----------------------------------------------------------------------
         # Reachability heuristics
+        #-----------------------------------------------------------------------
         if ($plugin && $plugin->can('can_soft_shutdown') && $plugin->can_soft_shutdown()) {
             $reachable = 1;
             $reason    = 'plugin reports soft shutdown capability';
-        } elsif (defined $socket || defined $port || defined $pid_file) {
+        }
+        elsif (defined $socket || defined $port || defined $pid_file) {
             $reachable = 1;
             $reason    = 'runtime artifacts available';
-        } else {
+        }
+        else {
             $reachable = 0;
             $reason    = 'no runtime artifacts for clean shutdown';
         }
@@ -1173,6 +1174,9 @@ sub _EnsureDbStarted {
         };
     }
 
+    #---------------------------------------------------------------------------
+    # Classify overall state
+    #---------------------------------------------------------------------------
     my $total         = scalar @instances;
     my $reachable_cnt = scalar grep { $_->{reachable} } @instances;
 
@@ -1190,6 +1194,7 @@ sub _EnsureDbStarted {
         }
     );
 }
+
 
 #===============================================================================
 # _EnsurePluginLoaded
@@ -1295,6 +1300,7 @@ sub _LoadDbPlugin {
         db_trans_logs_dir       => $options_ref->{db_trans_logs_dir},
         db_config_file          => $options_ref->{db_config_file},
         db_plugin_dir           => $options_ref->{db_plugin_dir},
+        db_runtime_dir          => $options_ref->{db_runtime_dir},
 
         # Connectivity
         db_port                 => $options_ref->{db_port},

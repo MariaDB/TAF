@@ -97,7 +97,7 @@ use TAF::Logging qw(PrintError
 
 use TAF::Utilities;
 use TAF::TestSuiteManagement;
-our $VERSION = '2.0';
+our $VERSION = '3.0';
 
 #===============================================================================
 #                             Exports
@@ -328,7 +328,8 @@ sub GenerateReport {
             $results,
             $report_plugin,
             $reports_directory,
-            $obj
+            $obj,
+            $opts
         );
     }
 
@@ -396,7 +397,7 @@ sub GenerateReport {
 #     Break up into logical units of work.
 #===============================================================================
 sub _DispatchReportPlugin {
-    my ($results, $report_plugin, $reports_directory) = @_;
+    my ($results, $report_plugin, $reports_directory, $obj, $opts) = @_;
 
     my $dr = StageStart(TAFMsg("_DispatchReportPlugin"));
 
@@ -447,6 +448,19 @@ sub _DispatchReportPlugin {
     my $ts       = $meta->{test_suite};
     my $testname = $meta->{test_name};
 
+    # Add missing backend properties to meta
+    $meta->{backend_parser_jar} = $opts->{backend_parser_jar};
+    $meta->{jdbc_jar}           = $opts->{jdbc_jar};
+    $meta->{json_jar}           = $opts->{json_jar};
+    $meta->{backend_config}     = $opts->{backend_config};
+    $meta->{java_bin} = $opts->{java_bin};
+    
+    # NEW: Add threshold settings to metadata
+    $meta->{results_threshold_warning_pct}                = $opts->{results_threshold_warning_pct};
+    $meta->{results_threshold_fail_pct}                   = $opts->{results_threshold_fail_pct};
+    $meta->{results_threshold_gain_pct}                   = $opts->{results_threshold_gain_pct};
+    $meta->{results_iteration_allowed_duration_drift_pct} = $opts->{results_iteration_allowed_duration_drift_pct};
+    
     PrintVerbose("$dr Using metadata: host=$host, dbmaker=$dbmaker, testsuite=$ts, testname=$testname");
 
     my $success = FALSE;
@@ -553,9 +567,10 @@ sub _HarvestResultsFromSubdirs {
         PrintVerbose($hr . "  Processing: $sub");
         PrintVerbose($hr . "  Meta path: $metaPath");
 
-        my $meta = 
+        my $meta =
            TAF::Utilities::NormalizeMetadata(
              TAF::TestSuiteManagement::ParseTestSuiteMetadata($metaPath));
+
         unless ($meta && ref($meta) eq 'HASH') {
             PrintError("$hr  Invalid or missing metadata for $sub");
             next;

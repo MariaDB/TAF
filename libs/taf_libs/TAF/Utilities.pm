@@ -3,7 +3,7 @@ package TAF::Utilities;
 # TAF::Utilities
 #
 # Created: December 2025
-# Last Modified: March 2026
+# Last Modified: June 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -79,7 +79,7 @@ package TAF::Utilities;
 #       install-type inference pipeline and must remain stable unless
 #       coordinated with DatabaseSoftwareInstalls.
 #############################################################################
-our $VERSION = '2.5';
+our $VERSION = '3.0';
 #===============================================================================
 #                            Imports
 #===============================================================================
@@ -134,6 +134,8 @@ our @EXPORT = qw(
     AllKnownDBExecutables
     CheckForRunningDbProcess
     CheckPerlVersion
+    CleanRuntimeDir
+    CleanTmpDir
     CreateTestLock
     ConfirmDestructiveAction
     EnsureFrameworkSubDirs
@@ -257,6 +259,7 @@ our @initOptDirs =
     "archive_path",
     "db_data_dir",
     "database_restore_image_dir",
+    "db_runtime_dir",
     "db_software_install_root_dir",
     "db_trans_logs_dir",
     "logs_dir",
@@ -1520,6 +1523,7 @@ sub SetEnvironmentVariables {
 #           * results_root_dir
 #           * tmp_dir
 #           * db_data_dir
+#           * db_runtime_dir
 #           * db_software_install_root_dir
 #
 #     - Set default credentials and runtime values:
@@ -1579,6 +1583,7 @@ sub SetupVariables {
     $options_ref->{results_root_dir}  //= $dirs_ref->{working} . "results/";
     $options_ref->{tmp_dir}           //= $dirs_ref->{working} . "tmp/";
     $options_ref->{db_data_dir}       //= $dirs_ref->{working} . "data/";
+    $options_ref->{db_runtime_dir}    //= $dirs_ref->{working} . "runtime/";
     $options_ref->{database_restore_image_dir}
                                       //= $dirs_ref->{working} . "db_image/";
     $options_ref->{db_software_install_root_dir}
@@ -1607,9 +1612,9 @@ sub SetupVariables {
     # Database connection defaults
     $options_ref->{db_port}   //= 3306;
 
-    # Default socket path inside tmp_dir
+    # Default socket path inside db_runtime_dir
     # Ensures writable, isolated, non-system path
-    $options_ref->{db_socket} //= $options_ref->{tmp_dir} . "db.sock";
+    $options_ref->{db_socket} //= $options_ref->{db_runtime_dir} . "db.sock";
 
 
     # Active install marker
@@ -1670,6 +1675,152 @@ sub CleanSplit {
     } @vals;
 
     return @vals;
+}
+
+#===============================================================================
+# CleanTmpDir
+#
+# Purpose:
+#     Archive and clear the framework tmp_dir before database initialization.
+#
+# Parameters:
+#     $ctx : Framework context handle.
+#
+# Behavior:
+#     - Creates a timestamped archive directory.
+#     - Moves all non-dot files from tmp_dir into the archive.
+#     - Leaves tmp_dir empty.
+#
+# Returns:
+#     None.
+#
+# Notes:
+#     Always logs via PrintVerbose. Never fails the caller.
+#===============================================================================
+sub CleanTmpDir {
+    my ($ctx) = @_;
+
+    my $tmp_dir      = $ctx->{options}->{tmp_dir};
+    my $archive_root = $ctx->{options}->{archive_path};
+
+    return unless defined $tmp_dir && -d $tmp_dir;
+
+    opendir(my $dh, $tmp_dir) or do {
+        PrintVerbose("Failed to open tmp_dir: $tmp_dir");
+        return;
+    };
+
+    my @contents = grep { $_ !~ /^\.\.?$/ } readdir($dh);
+    closedir($dh);
+
+    # Nothing to archive
+    return unless @contents;
+
+    # Timestamp
+    my ($sec,$min,$hour,$mday,$mon,$year) = localtime();
+    $year += 1900;
+    $mon  += 1;
+
+    my $timestamp = sprintf("%04d%02d%02d_%02d%02d%02d",
+                            $year, $mon, $mday, $hour, $min, $sec);
+
+    my $archive_dir = File::Spec->catdir($archive_root,
+                                         "tmp_artifacts_$timestamp");
+
+    File::Path::make_path($archive_dir);
+
+    PrintVerbose("Archiving tmp_dir contents to: $archive_dir");
+
+    # Move files
+    for my $file (@contents) {
+        my $src = File::Spec->catfile($tmp_dir, $file);
+        my $dst = File::Spec->catfile($archive_dir, $file);
+
+        if (rename($src, $dst)) {
+            PrintVerbose("Moved tmp artifact: $file -> $archive_dir");
+        } else {
+            PrintVerbose("Failed to move tmp artifact: $file");
+        }
+    }
+
+    PrintVerbose("tmp_dir cleanup complete: $tmp_dir is now empty");
+}
+
+
+#===============================================================================
+# CleanRuntimeDir
+#
+# Purpose:
+#     Archive and clear the framework runtime_dir before database initialization.
+#
+# Parameters:
+#     $ctx : Framework context handle.
+#
+# Behavior:
+#     - Creates a timestamped archive directory.
+#     - Moves all non-dot files from runtime_dir into the archive.
+#     - Leaves runtime_dir empty.
+#
+# Returns:
+#     None.
+#
+# Notes:
+#     Always logs via PrintVerbose. Never fails the caller.
+#===============================================================================
+sub CleanRuntimeDir {
+    my ($ctx) = @_;
+
+    my $runtime_dir  = $ctx->{options}->{db_runtime_dir};
+    my $archive_root = $ctx->{options}->{archive_path};
+
+    # Nothing to do if runtime_dir doesn't exist
+    return unless defined $runtime_dir && -d $runtime_dir;
+
+    # Check for real contents before doing anything
+    opendir(my $dh, $runtime_dir) or do {
+        PrintVerbose("Failed to open runtime_dir: $runtime_dir");
+        return;
+    };
+
+    my @contents = grep { $_ !~ /^\.\.?$/ } readdir($dh);
+    closedir($dh);
+
+    # Nothing to archive
+    return unless @contents;
+
+    # Timestamp for archive folder
+    my ($sec,$min,$hour,$mday,$mon,$year) = localtime();
+    $year += 1900;
+    $mon  += 1;
+
+    my $timestamp = sprintf(
+        "%04d%02d%02d_%02d%02d%02d",
+        $year, $mon, $mday, $hour, $min, $sec
+    );
+
+    my $archive_dir = File::Spec->catdir(
+        $archive_root,
+        "runtime_artifacts_$timestamp"
+    );
+
+    # Ensure archive directory exists
+    File::Path::make_path($archive_dir);
+
+    PrintVerbose("Archiving runtime_dir contents to: $archive_dir");
+
+    # Move all files from runtime_dir -> archive_dir
+    for my $file (@contents) {
+        my $src = File::Spec->catfile($runtime_dir, $file);
+        my $dst = File::Spec->catfile($archive_dir, $file);
+
+        if (rename($src, $dst)) {
+            PrintVerbose("Moved runtime artifact: $file -> $archive_dir");
+        } else {
+            PrintVerbose("Failed to move runtime artifact: $file");
+        }
+    }
+
+    PrintVerbose("runtime_dir cleanup complete: $runtime_dir is now empty");
 }
 
 #===============================================================================

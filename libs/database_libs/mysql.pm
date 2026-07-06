@@ -3,7 +3,9 @@ package mysql;
 # mysql.pm - MySQL Database Plugin for TAF
 #
 # Created:       December 2025
-# Last Modified: January 2026
+# Last Modified: June 2026
+#
+# Version: 3.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -169,6 +171,7 @@ use constant FALSE      => 0;
 #
 #         db_task_set              - Optional CPU affinity list.
 #         tmp_dir                  - Temporary directory for logs and sockets.
+#         db_runtime_dir           - Runtime directory for pid, socket, and logs.
 #         db_extra_args            - Additional mysqld command-line arguments.
 #
 # Behavior:
@@ -197,15 +200,15 @@ sub new {
         db_pid         => undef,
 
         # Install and data paths
-        install_root   => $args{db_software_install_dir},   # MySQL install directory
-        data_dir       => $args{db_data_dir},               # Data directory
-        trans_logs_dir => $args{db_trans_logs_dir},         # Optional: redo/undo logs directory
-        plugin_dir     => $args{db_plugin_dir},             # Optional: plugin directory
+        install_root   => $args{db_software_install_dir},
+        data_dir       => $args{db_data_dir},
+        trans_logs_dir => $args{db_trans_logs_dir},
+        plugin_dir     => $args{db_plugin_dir},
 
         # Config
-        config         => $args{db_config_file},            # Path to my.cnf
+        config         => $args{db_config_file},
 
-        # Binaries resolved during init
+        # Binaries (resolved below)
         mysqld_bin     => undef,
         mysql_bin      => undef,
         mysqladmin_bin => undef,
@@ -232,11 +235,11 @@ sub new {
         ssl_crl        => $args{db_ssl_crl},
         ssl_cipher     => $args{db_ssl_cipher},
 
-        # Native password
+        # Authentication
         db_use_native_for_passwords => $args{db_use_native_for_passwords},
 
         # Database
-        database       => $args{database}           // 'test',
+        database       => $args{database} // 'test',
 
         # Users
         db_user        => $args{db_user}            // 'mariadb_tester',
@@ -251,6 +254,9 @@ sub new {
         db_stop_wait   => $args{db_stop_wait},
         tmpdir         => $args{tmp_dir},
 
+        # Runtime directory (pid, socket, logs)
+        runtime_dir    => $args{db_runtime_dir} // $args{tmp_dir},
+
         # Extras
         extra_args     => $args{db_extra_args},
 
@@ -258,34 +264,73 @@ sub new {
         users_created        => FALSE,
         permissions_complete => FALSE,
 
-        # SSL/server version metadata
-        mysql_version        => undef,   # populated below
-        server_ssl_flags     => undef,   # populated below
+        # Version and SSL metadata
+        mysql_version        => undef,
+        server_ssl_flags     => undef,
     };
 
     bless $self, $class;
 
-    # Resolve binaries immediately
+    # Validate tmpdir
+    unless ($self->{tmpdir} && -d $self->{tmpdir}) {
+        PrintError("tmpdir is missing or not a directory: " .
+                   ($self->{tmpdir} // "<undef>"));
+        return undef;
+    }
+
+    # Validate runtime_dir
+    my $runtime_dir = $self->{runtime_dir} // $self->{tmpdir};
+
+    unless ($runtime_dir && -d $runtime_dir) {
+        PrintError("runtime_dir is missing or not a directory: " .
+                   ($runtime_dir // "<undef>"));
+        return undef;
+    }
+
+    # Initialization log lives under runtime_dir
+    $self->{log_init} = File::Spec->catfile($runtime_dir, "mysql_initialize.log");
+
+    # Validate install_root
+    unless ($self->{install_root} && -d $self->{install_root}) {
+        PrintError("install_root is missing or not a directory: " .
+                   ($self->{install_root} // "<undef>"));
+        return undef;
+    }
+
+    # Derive bindir, libdir, plugin_dir if not provided
+    $self->{basedir}     //= $self->{install_root};
+    $self->{bindir}      //= File::Spec->catdir($self->{install_root}, 'bin');
+    $self->{libdir}      //= File::Spec->catdir($self->{install_root}, 'lib');
+    $self->{plugin_dir}  //= File::Spec->catdir($self->{install_root}, 'lib', 'plugin');
+
+    # Export environment for correct library and binary resolution
+    $ENV{LD_LIBRARY_PATH} = $self->{libdir} . ":" . ($ENV{LD_LIBRARY_PATH} // "");
+    $ENV{PATH}            = $self->{bindir} . ":" . ($ENV{PATH} // "");
+
+    # Resolve binaries
     $self->{mysqld_bin}     = _find_binary($self->{install_root}, 'mysqld');
     $self->{mysql_bin}      = _find_binary($self->{install_root}, 'mysql');
     $self->{mysqladmin_bin} = _find_binary($self->{install_root}, 'mysqladmin');
 
-    # Detect MySQL version (used later for SSL capability and flags)
-    $self->{mysql_version} = _detect_mysql_version($self->{mysqld_bin});
-
-    # Compute version-aware server SSL flags based on ssl_mode and SSL files
-    $self->{server_ssl_flags} = _compute_server_ssl_flags($self);
-
-    # Validate required binaries
     foreach my $b (qw(mysqld_bin mysql_bin mysqladmin_bin)) {
         unless ($self->{$b} && -x $self->{$b}) {
-            PrintError("Required binary '$b' could not be resolved under $self->{install_root}");
+            PrintError("Required MySQL binary '$b' not found under $self->{install_root}");
             return undef;
         }
     }
 
+    # Detect MySQL version
+    $self->{mysql_version} = _detect_mysql_version($self->{mysqld_bin});
+
+    # Compute SSL flags
+    $self->{server_ssl_flags} = _compute_server_ssl_flags($self);
+
+    # Runtime pidfile
+    $self->{pidfile} = File::Spec->catfile($runtime_dir, "mysql_runtime.pid");
+
     return $self;
 }
+
 
 #===============================================================================
 #                            Exported Subs
@@ -408,12 +453,12 @@ sub db_init {
 #       tracking and eliminate shell-dependent behavior.
 #     - Builds a clean argv list for exec(), avoiding quoting hazards and
 #       ensuring reproducible behavior across environments.
-#     - Normalizes all runtime paths (socket, tmpdir, error log, pidfile)
+#     - Normalizes all runtime paths (socket, runtime_dir, error log, pidfile)
 #       before startup.
 #
 # BEHAVIOR:
 #     - Constructs the full mysqld command line as an argv list.
-#     - Applies connectivity, SSL/TLS, authentication plugin flags, tmpdir,
+#     - Applies connectivity, SSL/TLS, authentication plugin flags, runtime_dir,
 #       plugin-dir, redo/undo log directories, and any extra arguments.
 #     - Wraps the command in taskset when CPU affinity is configured.
 #     - Redirects stdout/stderr to mysqld_start.log via _spawn_background().
@@ -423,7 +468,7 @@ sub db_init {
 # CONTRACT:
 #     - $self->{mysqld_bin} must be executable.
 #     - ensure_runtime_paths() must be called before startup.
-#     - All required paths (config, datadir, tmpdir, error log) must exist.
+#     - All required paths (config, datadir, runtime_dir, error log) must exist.
 #     - Returns OK only when mysqld is confirmed ready.
 #     - On success, the runtime PID is read from the pidfile and stored in
 #       $self->{db_pid} for downstream consumers (e.g., rest-watch logic).
@@ -457,7 +502,7 @@ sub db_start {
     return ERROR if $self->_db_auth_plugin_guard() != OK;
 
     # Logging and pidfile directory
-    my $log_dir = $self->{tmpdir} // $self->{data_dir};
+    my $log_dir = $self->{runtime_dir} // $self->{data_dir};
     File::Path::make_path($log_dir) unless -d $log_dir;
 
     my $start_log = File::Spec->catfile($log_dir, "mysqld_start.log");
@@ -474,7 +519,6 @@ sub db_start {
                 return ERROR;
             }
         }
-        # stale pidfile: remove it
         unlink $pidfile;
     }
 
@@ -507,7 +551,7 @@ sub db_start {
     }
 
     # Runtime directories
-    push @cmd, "--tmpdir=$self->{tmpdir}"         if $self->{tmpdir};
+    push @cmd, "--tmpdir=$self->{runtime_dir}"   if $self->{runtime_dir};
     push @cmd, "--plugin-dir=$self->{plugin_dir}" if $self->{plugin_dir};
 
     # Transaction log dirs
@@ -569,6 +613,7 @@ sub db_start {
     return OK;
 }
 
+
 ###############################################################################
 # db_stop
 #
@@ -583,8 +628,8 @@ sub db_start {
 #     - Builds a deterministic shutdown command using:
 #           * socket (preferred) or host/port
 #           * root credentials
-#     - Redirects all stdout/stderr to mysqld_stop.log in tmpdir (or datadir
-#       as a fallback when tmpdir is not defined).
+#     - Redirects all stdout/stderr to mysqld_stop.log in runtime_dir (or
+#       datadir as a fallback when runtime_dir is not defined).
 #     - Executes the shutdown command and evaluates only the exit code.
 #     - Calls _wait_for_stop() to verify that mysqld has fully terminated
 #       (process, socket, and pidfile gone).
@@ -634,13 +679,13 @@ sub db_stop {
     $cmd .= " --user=\"$self->{db_root_user}\"";
     $cmd .= " --password=\"$self->{db_root_pass}\"" if $self->{db_root_pass};
 
-    # determine stop log directory (tmpdir preferred)
+    # determine stop log directory (runtime_dir preferred)
     my $log_dir;
-    if (defined $self->{tmpdir} && length $self->{tmpdir}) {
-        $log_dir = $self->{tmpdir};
+    if (defined $self->{runtime_dir} && length $self->{runtime_dir}) {
+        $log_dir = $self->{runtime_dir};
     } else {
         $log_dir = $self->{data_dir};
-        PrintWarning($_st."No tmpdir defined; placing stop log inside datadir at $log_dir/mysqld_stop.log");
+        PrintWarning($_st."No runtime_dir defined; placing stop log inside datadir at $log_dir/mysqld_stop.log");
     }
     File::Path::make_path($log_dir) unless -d $log_dir;
 
@@ -672,7 +717,6 @@ sub db_stop {
             close $pfh;
             chomp $pid;
 
-            # validate pid and reap if valid
             if ($pid =~ /^\d+$/) {
                 waitpid($pid, 0);
             }
@@ -685,6 +729,7 @@ sub db_stop {
     StageEnd($_st);
     return OK;
 }
+
 
 ###############################################################################
 # db_restart
@@ -873,7 +918,7 @@ sub db_pid {
 # ARCHITECTURAL ROLE:
 #     - Provides a deterministic, contributor-proof bootstrap environment.
 #     - Starts mysqld with a dedicated socket, pidfile, and error log under
-#       the TAF tmpdir to avoid permission issues and external interference.
+#       the TAF runtime_dir to avoid permission issues and external interference.
 #     - Uses fork/exec via _spawn_background() to eliminate shell-dependent
 #       behavior and ensure correct PID tracking.
 #     - Ensures bootstrap mysqld is ready before returning control.
@@ -888,7 +933,7 @@ sub db_pid {
 #
 # CONTRACT:
 #     - $self->{mysqld_bin} must be executable.
-#     - $self->{tmpdir} or $self->{data_dir} must exist and be writable.
+#     - $self->{runtime_dir} or $self->{data_dir} must exist and be writable.
 #     - Caller must have prepared the data directory and runtime paths.
 #     - Returns OK only when bootstrap mysqld is confirmed ready.
 #     - On failure, logs are written to bootstrap_error.log.
@@ -896,7 +941,7 @@ sub db_pid {
 # GUARANTEES:
 #     - No user configuration or my.cnf files are loaded.
 #     - No TCP networking is enabled; socket-only execution is enforced.
-#     - PID and log files are always placed under tmpdir for safety.
+#     - PID and log files are always placed under runtime_dir for safety.
 #     - Behavior is identical across shells and platforms due to fork/exec.
 #
 # NOTES:
@@ -915,13 +960,13 @@ sub _db_start_bootstrap {
         return ERROR;
     }
 
-    # tmpdir is authoritative for all bootstrap artifacts
-    my $tmpdir = $self->{tmpdir} // $self->{data_dir};
+    # runtime_dir is authoritative for all bootstrap artifacts
+    my $runtime_dir = $self->{runtime_dir} // $self->{data_dir};
 
     # construct bootstrap-specific socket, pidfile, and error log paths
-    my $bs_sock = File::Spec->catfile($tmpdir, "bootstrap.sock");
-    my $bs_pid  = File::Spec->catfile($tmpdir, "bootstrap.pid");
-    my $bs_log  = File::Spec->catfile($tmpdir, "bootstrap_error.log");
+    my $bs_sock = File::Spec->catfile($runtime_dir, "bootstrap.sock");
+    my $bs_pid  = File::Spec->catfile($runtime_dir, "bootstrap.pid");
+    my $bs_log  = File::Spec->catfile($runtime_dir, "bootstrap_error.log");
 
     $self->{bootstrap_socket} = $bs_sock;
     $self->{bootstrap_pid}    = $bs_pid;
@@ -1000,6 +1045,7 @@ sub _db_start_bootstrap {
     StageEnd($_st);
     return OK;
 }
+
 
 ###############################################################################
 # _db_stop_bootstrap
@@ -1853,18 +1899,39 @@ sub _db_validate_config {
 sub _db_detect_capabilities {
     my ($self) = @_;
 
-    # capture mysqld help output using both flag orders for full coverage
     my $mysqld = $self->{mysqld_bin};
-    my @help1 = `$mysqld --help --verbose 2>/dev/null`;
-    my @help2 = `$mysqld --verbose --help 2>/dev/null`;
+
+    # Run help commands and capture stderr too
+    my @help1 = `$mysqld --help --verbose 2>&1`;
+    my @help2 = `$mysqld --verbose --help 2>&1`;
     my @help  = (@help1, @help2);
 
-    # Detect explicit flags, not generic words
+    # If mysqld failed to run (missing libs, etc.)
+    my $help_text = join("", @help);
+    if ($help_text =~ /error while loading shared libraries/i
+        || $help_text =~ /cannot open shared object file/i
+        || $help_text =~ /not found/i) {
+
+        PrintWarning("mysqld help failed to run; forcing initialize-insecure mode");
+
+        # MySQL 8.0+ always supports initialize
+        return (TRUE, TRUE);
+    }
+
+    # Normal detection (works for MariaDB)
     my $supports_secure   = grep(/--initialize(?:\s|=|$)/, @help)        ? TRUE : FALSE;
     my $supports_insecure = grep(/--initialize-insecure\b/, @help)       ? TRUE : FALSE;
 
+    # MySQL maker override
+    if (defined $self->{db_maker} && $self->{db_maker} eq 'mysql') {
+        $supports_secure   = TRUE;
+        $supports_insecure = TRUE;
+    }
+
     return ($supports_insecure, $supports_secure);
 }
+
+
 
 ###############################################################################
 # _db_prepare_data_dir
@@ -2062,15 +2129,16 @@ sub _db_normalize_layout {
 #
 # PURPOSE:
 #     Normalize all runtime critical filesystem paths (socket, error log,
-#     tmpdir, secure file priv) to ensure none of them reside inside the MySQL
-#     data directory. Paths inside datadir are unsafe because mysqld may delete
-#     or overwrite them during initialization or shutdown. TAF configured
-#     data_dir and tmpdir are authoritative.
+#     runtime_dir, secure file priv) to ensure none of them reside inside the
+#     MySQL data directory. Paths inside datadir are unsafe because mysqld may
+#     delete or overwrite them during initialization or shutdown. TAF configured
+#     data_dir and runtime_dir are authoritative.
 #
 # CONTRACT:
-#     - $self->{data_dir} and $self->{tmpdir} must be set.
-#     - tmpdir will be created if missing.
-#     - Any runtime path located inside datadir will be redirected into tmpdir.
+#     - $self->{data_dir} and $self->{runtime_dir} must be set.
+#     - runtime_dir will be created if missing.
+#     - Any runtime path located inside datadir will be redirected into
+#       runtime_dir.
 #     - Config file overrides (cnf_datadir, cnf_socket, cnf_log_error,
 #       cnf_tmpdir) are allowed but sanitized.
 #     - Calls _db_normalize_secure_file_priv() and returns ERROR if it fails.
@@ -2090,7 +2158,7 @@ sub _db_normalize_layout {
 #     ERROR   secure file priv normalization failed.
 #
 # SIDE EFFECTS:
-#     - Creates tmpdir if missing.
+#     - Creates runtime_dir if missing.
 #     - Emits PrintWarning for any overridden or redirected paths.
 #     - Emits PrintVerbose summary of final runtime paths.
 #     - Updates:
@@ -2110,11 +2178,11 @@ sub _db_normalize_layout {
 sub _db_normalize_runtime_paths {
     my ($self) = @_;
 
-    my $data   = $self->{data_dir};
-    my $tmpdir = $self->{tmpdir};
+    my $data        = $self->{data_dir};
+    my $runtime_dir = $self->{runtime_dir};
 
-    # ensure tmpdir exists (TAF owns it, but enforce safety)
-    File::Path::make_path($tmpdir) unless -d $tmpdir;
+    # ensure runtime_dir exists (TAF owns it, but enforce safety)
+    File::Path::make_path($runtime_dir) unless -d $runtime_dir;
 
     # helper: detect whether a path resides inside datadir
     my $inside = sub {
@@ -2136,7 +2204,7 @@ sub _db_normalize_runtime_paths {
     if (defined $socket && length $socket) {
         if ($inside->($socket)) {
             my $orig = $socket;
-            $socket = File::Spec->catfile($tmpdir, "mysql.sock");
+            $socket = File::Spec->catfile($runtime_dir, "mysql.sock");
             PrintWarning("_db_normalize_runtime_paths: Socket $orig inside datadir; redirecting to $socket");
         }
     }
@@ -2144,11 +2212,11 @@ sub _db_normalize_runtime_paths {
     $self->{socket} = $socket;
 
     # normalize error log path and redirect if it resides inside datadir
-    my $log_error = $self->{cnf_log_error} // File::Spec->catfile($tmpdir, "mysqld.err");
+    my $log_error = $self->{cnf_log_error} // File::Spec->catfile($runtime_dir, "mysqld.err");
 
     if ($inside->($log_error)) {
         my $orig = $log_error;
-        $log_error = File::Spec->catfile($tmpdir, "mysqld.err");
+        $log_error = File::Spec->catfile($runtime_dir, "mysqld.err");
         PrintWarning("_db_normalize_runtime_paths: log-error $orig inside datadir; redirecting to $log_error");
     }
 
@@ -2156,7 +2224,7 @@ sub _db_normalize_runtime_paths {
 
     # tmpdir override: warn and ignore if user-supplied tmpdir is inside datadir
     if (defined $self->{cnf_tmpdir} && $inside->($self->{cnf_tmpdir})) {
-        PrintWarning("_db_normalize_runtime_paths: tmpdir ".$self->{cnf_tmpdir}." inside datadir; using TAF tmpdir=$tmpdir");
+        PrintWarning("_db_normalize_runtime_paths: tmpdir ".$self->{cnf_tmpdir}." inside datadir; using TAF runtime_dir=$runtime_dir");
     }
 
     # secure-file-priv normalization must succeed
@@ -2165,11 +2233,10 @@ sub _db_normalize_runtime_paths {
     # verbose summary of resolved runtime paths
     PrintVerbose("Runtime paths:");
     PrintVerbose("  datadir           = $data");
-    PrintVerbose("  tmpdir            = $tmpdir");
+    PrintVerbose("  runtime_dir       = $runtime_dir");
     PrintVerbose("  socket            = ".($self->{socket}//"(none)"));
     PrintVerbose("  error log         = ".$self->{error_log});
     PrintVerbose("  secure-file-priv  = ".$self->{secure_file_priv});
-
 }
 
 ###############################################################################
@@ -2188,8 +2255,8 @@ sub _db_normalize_runtime_paths {
 #
 # CONTRACT:
 #     - $self->{mysqld_bin} must be executable.
-#     - $self->{config}, $self->{install_root}, $self->{data_dir}, and $self->{tmpdir}
-#       must be set and valid.
+#     - $self->{config}, $self->{install_root}, $self->{data_dir}, and
+#       $self->{runtime_dir} must be set and valid.
 #     - $mode must be either "secure" or "insecure".
 #     - Returns OK on successful initialization and log parsing.
 #     - Returns ERROR on any failure (mysqld exit code or log parse failure).
@@ -2212,7 +2279,7 @@ sub _db_normalize_runtime_paths {
 #
 # SIDE EFFECTS:
 #     - Executes mysqld via system().
-#     - Creates mysqld_init.log in tmpdir.
+#     - Creates mysqld_init.log in runtime_dir.
 #     - Sets:
 #           $self->{initialized} = TRUE
 #           $self->{init_log}    = <path to mysqld_init.log>
@@ -2237,7 +2304,7 @@ sub _db_run_initialize {
     my $mysqld = $self->{mysqld_bin};
 
     # log file for initialization output
-    my $log    = File::Spec->catfile($self->{tmpdir}, "mysqld_init.log");
+    my $log    = File::Spec->catfile($self->{runtime_dir}, "mysqld_init.log");
 
     # choose secure or insecure initialization flag
     my $flag = $mode eq "insecure"
@@ -2301,13 +2368,13 @@ sub _db_run_initialize {
 #           fill_help_tables.sql
 #       All must exist or the routine returns ERROR.
 #
-#     - Writes a combined SQL script (mysqld_init.sql) into tmpdir.
+#     - Writes a combined SQL script (mysqld_init.sql) into runtime_dir.
 #     - Executes mysqld with:
 #           --bootstrap
 #           --defaults-file
 #           --basedir
 #           --datadir
-#       Redirects all output to mysqld_init.log.
+#       Redirects all output to mysqld_init.log in runtime_dir.
 #
 #     - Returns OK on successful bootstrap.
 #     - Returns ERROR on any failure (missing files, unreadable files,
@@ -2329,8 +2396,8 @@ sub _db_run_initialize {
 #     ERROR   Legacy bootstrap failed.
 #
 # SIDE EFFECTS:
-#     - Creates mysqld_init.sql in tmpdir.
-#     - Creates mysqld_init.log in tmpdir.
+#     - Creates mysqld_init.sql in runtime_dir.
+#     - Creates mysqld_init.log in runtime_dir.
 #     - Sets:
 #           $self->{initialized} = TRUE
 #           $self->{init_log}    = <path to mysqld_init.log>
@@ -2365,7 +2432,7 @@ sub _db_run_legacy_bootstrap {
     }
 
     # path to combined SQL file used for bootstrap
-    my $init_sql = File::Spec->catfile($self->{tmpdir}, 'mysqld_init.sql');
+    my $init_sql = File::Spec->catfile($self->{runtime_dir}, 'mysqld_init.sql');
 
     # open output SQL file for writing
     open(my $fh, '>', $init_sql) or do {
@@ -2385,7 +2452,7 @@ sub _db_run_legacy_bootstrap {
     close $fh;
 
     # log file for bootstrap output
-    my $log = File::Spec->catfile($self->{tmpdir}, 'mysqld_init.log');
+    my $log = File::Spec->catfile($self->{runtime_dir}, 'mysqld_init.log');
 
     # build legacy bootstrap command
     my $cmd = "\"$self->{mysqld_bin}\" --defaults-file=\"$self->{config}\" ".

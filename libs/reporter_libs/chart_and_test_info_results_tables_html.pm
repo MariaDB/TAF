@@ -547,7 +547,7 @@ JS
     my $datasets_js = "[\n" . join(",\n", @datasets_js) . "\n]";
     my $chart_type = (@thread_counts > 1) ? 'line' : 'bar';
 
-    my $chart_title    = "$primary_name by Thread Count - $testname";
+    my $chart_title    = "$testname";
     my $chart_subtitle = $comment;
 
     #-------------------------------------------------------------------------

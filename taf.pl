@@ -4,7 +4,7 @@
 #
 # Created:       August 2025 (TAF 1.0)
 # Redesign:      Novemeber 2025 (TAF 2.0 architecture)
-# Last Modified: March 2026
+# Last Modified: June 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -136,8 +136,8 @@
 #       documented in the TAF usage.
 #############################################################################
 use constant FRAMEWORK          => "taf-perl";
-use constant FRAMEWORK_VERSION  => 2;
-use constant FRAMEWORK_REVISION => 5;
+use constant FRAMEWORK_VERSION  => 3;
+use constant FRAMEWORK_REVISION => 0;
 
 #-------------------------------------------------------------------------------
 #                              Constants
@@ -426,11 +426,16 @@ our %options = (
     # Core execution / test flow
     "action"                        => undef, # Action to perform
     "comments"                      => undef, # Run comments
+    "backend_config"                => undef, # taf_backend config
+    "backend_parser_jar"            => undef, # taf backend parser jar
     "duration"                      => undef, # How long to run test
     "database_iteration_mode"       => undef, # What to do with db every iteration
     "database_restore_image_dir"    => undef, # Where restore image is kept
     "include_warmup_iteration"      => undef, # Warmup database
     "iterations"                    => undef, # Number of iterations to run the test(s)
+    "java_bin"                      => undef, # java binary
+    "jdbc_jar"                      => undef, # jdbc jar file
+    "json_jar"                      => undef, # json jar file
     "restore_image_format"          => undef, # How to handle the restore image.
     "tests"                         => undef, # Command-delimited list of tests to run
     "threads"                       => undef, # Command-delimited list of threads to run
@@ -476,6 +481,7 @@ our %options = (
     "db_port"                    => undef, # Database port
     "db_root_user"               => undef, # Root user name
     "db_root_pass"               => undef, # Root user password
+    "db_runtime_dir"             => undef, # Where runtime db directory lives
     "db_socket"                  => undef, # Database socket
     "db_ssl_mode"                => undef, # SSL Mode
     "db_ssl_ca"                  => undef, # Path to CA certificate file
@@ -495,6 +501,7 @@ our %options = (
      "db_stop_wait"              => undef, # DB how long to wait for stopping?
 
     # DB Process Rest Watch
+    "db_process_pid"               => undef, # PID for already running db instance
     "db_process_rest_enable"       => undef, # Flag: enable CPU-based rest detection
     "db_process_rest_low"          => undef, # CPU percent considered "at rest"
     "db_process_rest_high"         => undef, # CPU percent that forces a reset
@@ -506,6 +513,12 @@ our %options = (
     "db_software_install_packages"  => undef, # DB software archive(s)
     "db_software_install_dir"       => undef, # Current install under test
     "db_software_install_root_dir"  => undef, # Where install live
+
+    # TAF Backend
+    "results_threshold_warning_pct"                => undef, # % a result gives warning 
+    "results_threshold_fail_pct"                   => undef, # % a result gives failed
+    "results_threshold_gain_pct"                   => undef, # % a result gives gain
+    "results_iteration_allowed_duration_drift_pct" => undef, # % a allowed drift in durations
 
     # Profiling
     "profiler_enabled"             => undef, # Enable or disable profiling

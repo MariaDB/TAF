@@ -3,7 +3,9 @@ package mariadb;
 # mariadb.pm - MariaDB Database Plugin for TAF
 #
 # Created:       January 2026
-# Last Modified: April 2026
+# Last Modified: June 2026
+#
+# Vesion: 3.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -227,6 +229,9 @@ sub new {
         db_stop_wait   => $args{db_stop_wait},
         tmpdir         => $args{tmp_dir},
 
+        # NEW: runtime directory for pid, socket, logs, etc.
+        runtime_dir    => $args{db_runtime_dir} // $args{tmp_dir},
+
         # Extras
         extra_args     => $args{db_extra_args},
 
@@ -241,14 +246,24 @@ sub new {
 
     bless $self, $class;
 
-    # Initialize log paths (tmpdir is mandatory)
+    # Initialize tmpdir (legacy scratch) - must exist
     unless ($self->{tmpdir} && -d $self->{tmpdir}) {
         PrintError("tmpdir is missing or not a directory: " .
                    ($self->{tmpdir} // "<undef>"));
         return undef;
     }
-    
-    $self->{log_init} = File::Spec->catfile($self->{tmpdir}, "mariadb_initialize.log");
+
+    # Resolve effective runtime directory (may be same as tmpdir)
+    my $runtime_dir = $self->{runtime_dir} // $self->{tmpdir};
+
+    unless ($runtime_dir && -d $runtime_dir) {
+        PrintError("runtime_dir is missing or not a directory: " .
+                   ($runtime_dir // "<undef>"));
+        return undef;
+    }
+
+    # Initialization log lives under runtime_dir
+    $self->{log_init} = File::Spec->catfile($runtime_dir, "mariadb_initialize.log");
 
     # Check install_root early and explicitly
     unless ($self->{install_root} && -d $self->{install_root}) {
@@ -256,6 +271,15 @@ sub new {
                    ($self->{install_root} // "<undef>"));
         return undef;
     }
+
+    # Derive paths automatically if not provided        $self->{basedir}     //= $self->{install_root};
+    $self->{plugin_dir}  //= File::Spec->catdir($self->{install_root}, 'lib', 'plugin');
+    $self->{libdir}      //= File::Spec->catdir($self->{install_root}, 'lib');
+    $self->{bindir}      //= File::Spec->catdir($self->{install_root}, 'bin');
+    
+    # Export runtime environment so plugins and libs load correctly
+    $ENV{LD_LIBRARY_PATH} = $self->{libdir} . ":" . ($ENV{LD_LIBRARY_PATH} // "");
+    $ENV{PATH}            = $self->{bindir} . ":" . ($ENV{PATH} // "");
 
     # Resolve server binary (MariaDB uses mariadbd, but mysqld may exist)
     $self->{mariadbd_bin} =
@@ -286,7 +310,8 @@ sub new {
     # Compute SSL flags (MariaDB-specific implementation later)
     $self->{server_ssl_flags} = $self->_compute_server_ssl_flags($self);
 
-    $self->{pidfile} = File::Spec->catfile($self->{tmpdir}, "mariadb_runtime.pid");
+    # Runtime pidfile now lives under runtime_dir
+    $self->{pidfile} = File::Spec->catfile($runtime_dir, "mariadb_runtime.pid");
 
     return $self;
 }
@@ -444,12 +469,12 @@ sub db_start {
     my $_st = StageStart($_me." -> Database Start -> ");
 
     # Resolve runtime paths and binaries
-    my $server   = $self->{mariadbd_bin};
-    my $data_dir = $self->{data_dir};
-    my $socket   = $self->{socket};
-    my $tmpdir   = $self->{tmpdir};
-    my $pidfile  = $self->{pidfile};      # now defined in new()
-    my $log      = File::Spec->catfile($tmpdir, "mariadb_start.log");
+    my $server      = $self->{mariadbd_bin};
+    my $data_dir    = $self->{data_dir};
+    my $socket      = $self->{socket};
+    my $runtime_dir = $self->{runtime_dir} // $self->{tmpdir};
+    my $pidfile     = $self->{pidfile};      # now defined in new()
+    my $log         = File::Spec->catfile($runtime_dir, "mariadb_start.log");
 
     # Validate server binary
     unless ($server && -x $server) {
@@ -489,6 +514,13 @@ sub db_start {
         "--log-error=$log",
         "--pid-file=$pidfile",
     );
+  
+    # Add layout-derived paths
+    push @cmd, "--basedir=$self->{basedir}"    if $self->{basedir};
+    push @cmd, "--plugin-dir=$self->{plugin_dir}" if $self->{plugin_dir};
+
+    # Connectivity
+    push @cmd, "--port=$self->{port}" if $self->{port};
 
     # SSL flags
     if ($self->{server_ssl_flags}) {
@@ -999,6 +1031,17 @@ sub _db_setup_users {
 
         # Runtime mode: no bootstrap flag
         return ERROR if $self->_db_execute_no_return_query($sql,TRUE) != OK;
+      
+        my $sql2 =
+            "ALTER USER '"
+           . $self->{db_root_user}
+           . "'\@'127.0.0.1' "
+           . $clause
+           . " '"
+           . $self->{db_root_pass}
+           . "'";
+
+        return ERROR if $self->_db_execute_no_return_query($sql2,FALSE) != OK;
 
         PrintVerbose($_me."Root password set");
     }
@@ -1547,6 +1590,12 @@ sub _db_load_config_paths {
     $self->{tmpdir}    = $tmpdir    if defined $tmpdir    && !defined $self->{tmpdir};
     $self->{error_log} = $error_log if defined $error_log && !defined $self->{error_log};
 
+    # NEW: if config provided tmpdir AND framework did not supply db_runtime_dir,
+    #       then runtime_dir inherits the config tmpdir.
+    if (defined $tmpdir && !defined $self->{runtime_dir}) {
+        $self->{runtime_dir} = $tmpdir;
+    }
+
     PrintVerbose("MariaDB::_db_load_config_paths Complete");
     return OK;
 }
@@ -1562,7 +1611,7 @@ sub _db_load_config_paths {
 #     this routine returns ERROR.
 #
 # BEHAVIOR:
-#     - Validates that tmpdir exists and is writable.
+#     - Validates that runtime exists and is writable.
 #     - Validates that data_dir exists.
 #     - Validates that the socket directory exists and is writable.
 #     - Validates that the error log directory exists and is writable.
@@ -1590,17 +1639,20 @@ sub ensure_runtime_paths {
        return OK;
     }
 
-    # tmpdir (must already exist; TAF default is guaranteed, user override is not)
-    if (defined $self->{tmpdir} && length $self->{tmpdir}) {
-        unless (-d $self->{tmpdir}) {
-            PrintError($_tag."tmpdir does not exist: $self->{tmpdir}");
+    # runtime_dir / tmpdir (must already exist; TAF default is guaranteed, user override is not)
+    my $runtime_dir = $self->{runtime_dir} // $self->{tmpdir};
+    if (defined $runtime_dir && length $runtime_dir) {
+        unless (-d $runtime_dir) {
+            PrintError($_tag."runtime_dir/tmpdir does not exist: $runtime_dir");
             return ERROR;
         }
-        unless (-w $self->{tmpdir}) {
-            PrintError($_tag."tmpdir not writable: $self->{tmpdir}");
+        unless (-w $runtime_dir) {
+            PrintError($_tag."runtime_dir/tmpdir not writable: $runtime_dir");
             return ERROR;
         }
-        $self->{tmpdir} = File::Spec->rel2abs($self->{tmpdir});
+        $runtime_dir = File::Spec->rel2abs($runtime_dir);
+        $self->{runtime_dir} = $runtime_dir;
+        $self->{tmpdir}    ||= $runtime_dir;
     }
 
     # data_dir (must already exist)
@@ -2094,9 +2146,9 @@ sub _db_run_install_db {
     # Resolve the install-db script path selected during capability detection.
     my $install_db = $self->{mariadb_install_db_bin};
 
-    # Resolve the normalized data directory and tmpdir.
-    my $data_dir = $self->{data_dir};
-    my $tmpdir   = $self->{tmpdir};
+    # Resolve the normalized data directory and runtime directory.
+    my $data_dir    = $self->{data_dir};
+    my $runtime_dir = $self->{runtime_dir} // $self->{tmpdir};
 
     # Validate that the install-db script exists and is executable.
     unless ($install_db && -x $install_db) {
@@ -2112,7 +2164,7 @@ sub _db_run_install_db {
     }
 
     # Construct the log file path for install-db output.
-    my $log = File::Spec->catfile($tmpdir, "mariadb_install_db.log");
+    my $log = File::Spec->catfile($runtime_dir, "mariadb_install_db.log");
     $self->{install_db_log} = $log;
 
     # Build the install-db command line.
@@ -2244,17 +2296,17 @@ sub _run_command {
 #       during db_init().
 #     - No authentication is enforced because grant tables are disabled.
 #     - All flags are passed exactly as intended via exec() argv.
-###############################################################################
+################################################################################
 sub _db_start_bootstrap {
     my ($self, $wait_seconds) = @_;
     my $_boot = StageStart($_me." -> StartBootstrap -> ");
 
     # Resolve required paths
-    my $server  = $self->{mariadbd_bin};
-    my $datadir = $self->{data_dir};
-    my $socket  = $self->{socket};
-    my $tmpdir  = $self->{tmpdir};
-    my $log     = File::Spec->catfile($tmpdir, "mariadb_bootstrap.log");
+    my $server      = $self->{mariadbd_bin};
+    my $datadir     = $self->{data_dir};
+    my $socket      = $self->{socket};
+    my $runtime_dir = $self->{runtime_dir} // $self->{tmpdir};
+    my $log         = File::Spec->catfile($runtime_dir, "mariadb_bootstrap.log");
 
     # Validate server binary
     unless ($server && -x $server) {
@@ -2269,7 +2321,7 @@ sub _db_start_bootstrap {
     }
 
     # Build pidfile path for bootstrap server
-    my $pidfile = File::Spec->catfile($tmpdir, "mariadb_bootstrap.pid");
+    my $pidfile = File::Spec->catfile($runtime_dir, "mariadb_bootstrap.pid");
 
     # Expose bootstrap pidfile and log before spawn so wait routines can see them
     $self->{bootstrap_pidfile} = $pidfile;

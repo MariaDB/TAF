@@ -1,0 +1,86 @@
+# =====================================================================
+# rocks_compare_v4.cnf — MyRocks tuning for 64GB host (32GB cache)
+# Minimal safe expansion of v3 for better write throughput
+# =====================================================================
+
+[mysqld]
+performance_schema=OFF
+disable-log-bin
+sync_binlog=0
+general_log=OFF
+slow_query_log=OFF
+
+default_storage_engine=RocksDB
+default_authentication_plugin=mysql_native_password
+character_set_server=utf8mb4
+collation_server=utf8mb4_general_ci
+tls_version = TLSv1.2,TLSv1.3
+
+max_connections=600
+max_prepared_stmt_count=1000000
+open_files_limit=65535
+table_open_cache=4000
+thread_cache_size=128
+
+transaction_isolation=REPEATABLE-READ
+
+sync_master_info=0
+sync_relay_log=0
+sync_relay_log_info=0
+
+aria_pagecache_buffer_size = 128M
+aria_sort_buffer_size = 128M
+
+tmp_table_size      = 32M
+max_heap_table_size = 32M
+
+plugin_maturity = gamma
+plugin_load_add = ha_rocksdb.so
+
+innodb_buffer_pool_size = 2G
+
+###############################################################################
+# ROCKSDB — 32GB BLOCK CACHE, OOM-SAFE
+###############################################################################
+
+# Cap index/filter memory
+rocksdb_max_open_files = 2000
+
+# 32GB block cache (target)
+rocksdb_block_cache_size = 32G
+
+rocksdb_block_size = 16384
+rocksdb_table_cache_numshardbits = 6
+
+rocksdb_flush_log_at_trx_commit = 0
+rocksdb_wal_recovery_mode       = 2
+
+rocksdb_max_total_wal_size      = 4G
+rocksdb_bytes_per_sync          = 4M
+rocksdb_wal_bytes_per_sync      = 4M
+
+# Prevent multi-GB compaction buffers
+rocksdb_use_direct_reads                       = 0
+rocksdb_use_direct_io_for_flush_and_compaction = 0
+rocksdb_compaction_readahead_size              = 0
+
+rocksdb_max_background_jobs        = 8
+rocksdb_max_subcompactions         = 2
+rocksdb_rate_limiter_bytes_per_sec = 0
+
+# CF options — v4: minimal safe expansion of v3
+rocksdb_default_cf_options = "write_buffer_size=96m;max_write_buffer_number=3;target_file_size_base=64m;max_bytes_for_level_base=1g;level0_file_num_compaction_trigger=4;level0_slowdown_writes_trigger=10;level0_stop_writes_trigger=20;block_based_table_factory={cache_index_and_filter_blocks=1;filter_policy=bloomfilter:10:false;whole_key_filtering=1};level_compaction_dynamic_level_bytes=true;optimize_filters_for_hits=true;compaction_pri=kMinOverlappingRatio"
+
+rocksdb_compaction_sequential_deletes_count_sd = 1
+rocksdb_compaction_sequential_deletes          = 199999
+rocksdb_compaction_sequential_deletes_window   = 200000
+
+rocksdb_info_log_level = ERROR
+
+[client]
+default-character-set = utf8mb4
+
+[mysqldump]
+quick
+max_allowed_packet = 64M
+

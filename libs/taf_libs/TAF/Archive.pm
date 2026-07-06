@@ -3,7 +3,7 @@ package TAF::Archive;
 # TAF::Archive
 #
 # Created: December 2025
-# Last Modified: January 2026
+# Last Modified: June 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -104,7 +104,7 @@ use TAF::Logging qw(PrintError
 require toolsLib;
 
 use constant TAF_ARCHIVE => 'TAF::Archive-> ';
-our $VERSION = '2.0';
+our $VERSION = '3.0';
 
 #===============================================================================
 #                             Exports
@@ -546,9 +546,9 @@ sub _MoveArchive {
 #
 # BEHAVIOR:
 #     - Validate the provided archive base name.
-#     - Ensure tmp_dir exists (create if necessary).
+#     - Ensure runtime_dir exists (create if necessary).
 #     - Validate results_root_dir exists before compression.
-#     - Compress results_root_dir into tmp_dir/<archiveBaseName>.tgz using
+#     - Compress results_root_dir into runtime_dir/<archiveBaseName>.tgz using
 #       toolsLib::Zipper().
 #     - Verify that the compressed archive file was created successfully.
 #     - If archive_host is localhost or 127.0.0.1:
@@ -564,7 +564,7 @@ sub _MoveArchive {
 #     ERROR - Any validation, compression, or transfer step failed.
 #
 # SIDE EFFECTS:
-#     - May create tmp_dir if missing.
+#     - May create runtime_dir if missing.
 #     - Writes archive files into local or remote archive destinations.
 #
 # NOTES:
@@ -579,7 +579,7 @@ sub _CompressArchiveAndMove {
     my $caam  = StageStart(TAF_ARCHIVE."_CompressArchiveAndMove -> ");
 
     # Pull required values into locals
-    my $tmp_dir_raw       = $options_ref->{tmp_dir};
+    my $runtime_dir_raw   = $dirs_ref->{runtime_dir};
     my $results_root_raw  = $options_ref->{results_root_dir};
     my $archive_host      = $options_ref->{archive_host};
     my $archive_path_raw  = $options_ref->{archive_path};
@@ -597,13 +597,13 @@ sub _CompressArchiveAndMove {
     # Build archive filename
     my $tmpFile = $archiveBaseName . ".tgz";
 
-    # Validate and ensure tmp_dir exists
-    unless (TAF::Utilities::EnsureDirectory($tmp_dir_raw)) {
+    # Validate and ensure runtime_dir exists
+    unless (TAF::Utilities::EnsureDirectory($runtime_dir_raw)) {
         PrintError($caam."TAF::Utilities::EnsureDirectory returned ERROR");
-        PrintVerbose($caam."Please check directory: ".$tmp_dir_raw);
+        PrintVerbose($caam."Please check directory: ".$runtime_dir_raw);
         return ERROR;
     }
-    my $tmp_dir = _NormalizePath($tmp_dir_raw);
+    my $runtime_dir = _NormalizePath($runtime_dir_raw);
 
     # Validate results_root_dir
     unless (defined $results_root_raw && -d $results_root_raw) {
@@ -613,7 +613,7 @@ sub _CompressArchiveAndMove {
     my $src = _NormalizePath($results_root_raw);
 
     # Build full path to compressed file
-    my $compressFile = $tmp_dir . $tmpFile;
+    my $compressFile = $runtime_dir . $tmpFile;
     PrintVerbose($caam."Compressing to $compressFile");
 
     # Compress results

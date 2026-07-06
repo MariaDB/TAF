@@ -63,7 +63,7 @@ Note: setup-client
    O = --action=<action>
    P = taf.action=<action>
 
-{TAF Options}
+  {TAF Options}
 
    O = --archive-host=<host>
    P = taf.archive_host=<host>
@@ -75,6 +75,19 @@ Note: setup-client
                    : Directory where results are to be archived.
                    : Default(taf/archive)
 
+   O = --backend-config=<path>/backend_config
+   P = taf.backend_config=<path>/backend_config
+                   : Backend ingestion configuration file.
+                   : Defines how the Java backend parser connects to the
+                     ingestion service (host, port, credentials, timeouts,
+                     logging, and other backend-specific settings).
+                   : Default(see: taf_default.properties)
+
+   O = --backend-parser-jar=<path>/backend_parser_jar
+   P = taf.backend_parser_jar=<path>/backend_parser_jar
+                   : Path to the backend's parser jar.
+                   : Default(see: taf_default.properties)
+ 
    O = --bypass-user-verification-on-purges
                    : Skip confirmation prompts for purge/delete operations.
 
@@ -88,8 +101,8 @@ Note: setup-client
                    : Turn compression on for archived results.
                    : Default(false)
 
-   O = --cmake-path=/path/to/cmake
-   P = taf.cmake_path=/path/to/cmake
+   O = --cmake-path=<path>
+   P = taf.cmake_path=<path>
                    : Path to cmake (client builds).
                    : Default(/usr/bin/cmake)
 
@@ -150,6 +163,16 @@ Note: setup-client
                    : Exit if TEST.LOCK exists.
                    : Default(false)
 
+   O = --generate-report
+   P = taf.generate_report={true/false}
+                   : Invoke report plugins at end of test.
+                   : Default(false)
+
+   O = --host=<host>
+   P = taf.host=<host>
+                   : Host script is running on.
+                   : Default(localhost)
+
    O = --include-warmup-iteration
    P = taf.include_warmup_iteration={false/true}
                    : Enable warmup iterations before each test case first run.
@@ -165,15 +188,20 @@ Note: setup-client
                    : Number of client sessions to spawn.
                    : Default(0)
 
-   O = --generate-report
-   P = taf.generate_report={true/false}
-                   : Invoke report plugins at end of test.
-                   : Default(false)
+   O = --java-bin=<path>
+   P = taf.java_bin=<path>
+                   : Where java lives.
+                   : Default(see: taf_default.properties)
 
-   O = --host=<host>
-   P = taf.host=<host>
-                   : Host script is running on.
-                   : Default(localhost)
+   O = --jdbc-jar=<path>
+   P = taf.jdbc_jar=<path>
+                   : Where jdbc jar lives.
+                   : Default(see: taf_default.properties)
+
+   O = --json_jar=<path>
+   P = taf.json_jar=<path>
+                   : Where json jar lives.
+                   : Default(see: taf_default.properties)
 
    O = --logs-dir=<path>
    P = taf.logs_dir=<path>
@@ -273,8 +301,7 @@ Note: setup-client
                    : Warmup duration.
                    : Default(100)
 
-{TEST SETUP MODES}
-----------------
+   {TEST SETUP MODES}
 
    O = --test-setup-mode=<mode>
    P = taf.test_setup_mode=<mode>
@@ -301,7 +328,7 @@ Note: setup-client
         test_setup_mode = per_iter
 
 
-{Test Specific Args}
+   {Test Specific Args}
 
    O = --duration=<seconds|min>
    P = taf.duration=<seconds|min>
@@ -385,7 +412,7 @@ Note: setup-client
                    : Output is written to the current iteration's sub-results directory.
                    : Default(null)
 
-{Database}
+  {Database}
 
    O = --taf-db-makers-plugin=<maker>
    P = taf.taf_db_makers_plugin=<maker>
@@ -437,6 +464,11 @@ Note: setup-client
    P = taf.db_port=<port>
                    : TCP port for database connections.
                    : Default(3306)
+
+   O = --db-runtime-dir=<path>
+   P = taf.db_runtime_dir=<path>
+                   : Where runtime files are located
+                   : Default(./tmp)
 
    O = --db-socket=<path>
    P = taf.db_socket=<path>
@@ -544,9 +576,10 @@ Note: setup-client
    * Database plugins, SQL libraries, and test suites consume the
      normalized SSL contract and must not override it.
 
-{Database Software}
-
-Note: Active Install Marker
+   {Database Software}
+   
+   Note: Active Install Marker
+   
    TAF maintains a small marker file that records which database software
    installation is currently considered "active". This marker allows TAF to
    consistently determine which installation should be used for actions such as
@@ -640,7 +673,7 @@ Note: Active Install Marker
                          is returned to the selection menu.
                        * If the user exits selection, no update is applied.
 
-{DB Process Rest Watch}
+  {DB Process Rest Watch}
 
    O = --db-process-rest-enable
    P = taf.db_process_rest_enable=<bool>
@@ -676,6 +709,13 @@ Note: Active Install Marker
                    : rest state.
                    : Default(200)
 
+   O = --db-process-pid=<int>
+   P = taf.db_process_pid=<int>
+                   : Explicit PID of the database process to monitor when
+                   : the database was started outside the current TAF run.
+                   : Used only when taf_var.db_pid is undefined or invalid.
+                   : Default(undefined)
+
    O = --db-process-rest-interval=<seconds>
    P = taf.db_process_rest_interval=<seconds>
                    : Seconds to sleep between sampling cycles. This is
@@ -687,6 +727,33 @@ Note: Active Install Marker
                    : Enable verbose diagnostic snapshots during rest
                    : detection. Intended for troubleshooting only.
                    : Default(false)
+
+   {TAF Backend}
+
+   O = --results-threshold-warning-pct=<int>
+   P = taf.results_threshold_warning_pct=<int>
+                   : Percentage regression that triggers a WARNING classification.
+                   : Applied per‑thread when comparing candidate vs baseline.
+                   : Default(3)
+
+   O = --results-threshold-fail-pct=<int>
+   P = taf.results_threshold_fail_pct=<int>
+                   : Percentage regression that triggers a FAIL/REGRESSION.
+                   : Applied per‑thread; any failing thread sets overall status.
+                   : Default(5)
+
+   O = --results-threshold-gain-pct=<int>
+   P = taf.results_threshold_gain_pct=<int>
+                   : Percentage improvement that triggers a GAIN classification.
+                   : Applied per‑thread; largest gain becomes dominant.
+                   : Default(5)
+
+   O = --results-iteration-allowed-duration-drift-pct=<int>
+   P = taf.results_iteration_allowed_duration_drift_pct=<int>
+                   : Allowed percentage drift in iteration duration when
+                   : validating baseline compatibility.
+                   : Duration is NOT hashed; drift is checked per thread group.
+                   : Default(10)
 
    {Profiling}
 
@@ -753,7 +820,7 @@ Note: Active Install Marker
                    : profiler module.
                    : Default(false)
 
-{Directory Maintenance}
+   {Directory Maintenance}
 
    O = --purge-archive
                    : Purge archive directory based on retention policy.
@@ -785,7 +852,7 @@ Note: Active Install Marker
                    : Purge data, results, reports, and tmp directories.
                    : See --bypass-user-verification-on-purges above
 
-{Misc}
+  {Misc}
 
    O = --tools-debug
    P = taf.tools_debug={false/true}
@@ -813,7 +880,7 @@ Note: Active Install Marker
    O = --version
                    : Print TAF version information.
 
-{EXIT CODES}
+  {EXIT CODES}
 
   Normal Exit   = 0
   Script Error  = 1

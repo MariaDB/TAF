@@ -34,6 +34,9 @@ TAF-Perl provides a deterministic, contributor-proof automation framework with t
 - Designed for single-host execution with client and backend co-resident
 - Contributor-proof design with explicit, predictable behavior
 - By default, TAF keeps all components, including database software installs, inside the TAF directory structure. This keeps test systems clean and allows multiple database installs to coexist without affecting the host.
+- Modular profiler plugin system supporting perf, flamegraph generation, and additional profiling tools via drop-in modules
+- Integrated TAF Results Backend for storing run metadata, workload parameters, automated comparison diffs, baselines, and regression detection
+
 
 ## Directory Structure
 
@@ -67,16 +70,25 @@ taf-perl/
     (optional external utilities)
 
   help/
-    TAF-PERL_OVERVIEW.pdf
-    TAF-PERL_DatabaseSoftwareInstallsQuickStart.pdf
-    TAF-PERL_HammerDB-TPROCC_QuickStart.pdf
-    TAF-PERL_HammerDB-TPROCH_QuickStart.pdf
-    TAF-PERL_Sysbench_QuickStart.pdf
-    taf_usage.txt
+    (Usage and help pdf)
 
   libs/
     database_libs/
+    profile_libs/
+      scripts/
+        flamegraph/
     reporter_libs/
+      backend/
+         backend_parser/
+             source/
+                taf/
+                  backend/
+                     parser/
+                     (Parser java code)
+         working/
+            backend.conf.example
+         backend_sql/
+            create_backend.sql
     script_tools_lib/
     sql_libs/
       dialects/
@@ -85,6 +97,7 @@ taf-perl/
         oracle/
         postgres/
     taf_libs/
+
 
   logs/
     (client build logs and test execution logs)
@@ -187,10 +200,24 @@ TAF-Perl is maintained under the MariaDB Foundation. The Foundation ensures that
 
 ## Copyright
 
-TAF-Perl and all associated source files are Copyright
-MariaDB Foundation
+TAF-Perl and all associated source files are part of the Test Automation Framework (TAF).
 
-All framework code, test suites, libraries, scripts, and documentation are released under the GNU General Public License, version 2 or later (GPLv2+), unless explicitly stated otherwise.
+Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
+
+All framework code, test suites, libraries, scripts, and documentation are released under the
+GNU General Public License, version 2 or later (GPLv2+), unless explicitly stated otherwise.
+
+This program is free software; you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation; version 2 or later.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+See the GNU General Public License for more details.
+
+A copy of the GNU General Public License should be included with this program. If not, you may
+obtain one from the Free Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
+02110-1335 or online at https://www.gnu.org/licenses/.
+
 
 ## Contributing
 

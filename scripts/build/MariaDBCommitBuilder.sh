@@ -7,7 +7,7 @@
 # Last Modified: June 2026
 #
 # This file is part of the Test Automation Framework (TAF).
-# Copyright (c) 2026 # MariaDB Foundation and Jonathan "jeb" Miller
+# Copyright (c) 2026 MariaDB Foundation and Jonathan "jeb" Miller
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by

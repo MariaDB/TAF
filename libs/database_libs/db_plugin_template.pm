@@ -3,7 +3,7 @@ package db_plugin_template;
 # db_plugin_template - TAF Database Plugin Template
 #
 # Created: December 2025
-# Last Modified: January 2026
+# Last Modified: June 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -146,6 +146,9 @@ sub new {
         cpus           => $args{db_task_set},
         tmpdir         => $args{tmp_dir},
 
+        # Runtime directory for pid, sock, logs, auto.cnf, ibtmp1, etc.
+        runtime_dir    => $args{db_runtime_dir} // $args{tmp_dir},
+
         # Extra args
         extra_args     => $args{db_extra_args},
 
@@ -210,7 +213,7 @@ sub db_pid {
     return undef;
 }
 
-#===============================================================================
+################################################################################
 #                          Internal Subs
 #===============================================================================
 # Private helpers for lifecycle, bootstrap, and environment setup.

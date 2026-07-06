@@ -3,7 +3,9 @@ package TAF::ActionWrappers;
 # TAF::ActionWrappers
 #
 # Created: December 2025
-# Last Modified: January 2026
+# Last Modified: June 2026
+#
+# Version: 2.5
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -81,7 +83,7 @@ package TAF::ActionWrappers;
 #     - This module intentionally contains no business logic; it is a pure
 #       orchestration layer.
 #############################################################################
-
+our $VERSION = '2.5';
 #-------------------------------------------------------------------------------
 #                            Imports
 #-------------------------------------------------------------------------------
@@ -107,6 +109,7 @@ use TAF::Logging qw(PrintError
                     StageEnd
                     TAFMsg);
 
+use TAF::Utilities;
 #===============================================================================
 #                       Exported ActionWrappers
 #===============================================================================
@@ -640,78 +643,8 @@ sub ShutdownDbHard {
     return TAF::Database::DbStopHard($ctx);
 }
 
-#===============================================================================
-# CleanTmpDir
-#
-# Purpose:
-#     Archive and clear the framework tmp_dir before database initialization.
-#
-# Parameters:
-#     $ctx : Framework context handle.
-#
-# Behavior:
-#     - Creates a timestamped archive directory.
-#     - Moves all non-dot files from tmp_dir into the archive.
-#     - Leaves tmp_dir empty.
-#
-# Returns:
-#     None.
-#
-# Notes:
-#     Always logs via PrintVerbose. Never fails the caller.
-#===============================================================================
-sub CleanTmpDir {
-    my ($ctx) = @_;
 
-    my $tmp_dir      = $ctx->{options}->{tmp_dir};
-    my $archive_root = $ctx->{options}->{archive_path};
 
-    # Nothing to do if tmp_dir doesn't exist
-    return unless defined $tmp_dir && -d $tmp_dir;
-
-    # Timestamp for archive folder
-    my ($sec,$min,$hour,$mday,$mon,$year) = localtime();
-    $year += 1900;
-    $mon  += 1;
-
-    my $timestamp = sprintf(
-        "%04d%02d%02d_%02d%02d%02d",
-        $year, $mon, $mday, $hour, $min, $sec
-    );
-
-    my $archive_dir = File::Spec->catdir(
-        $archive_root,
-        "tmp_artifacts_$timestamp"
-    );
-
-    # Ensure archive directory exists
-    File::Path::make_path($archive_dir);
-
-    PrintVerbose("Archiving tmp_dir contents to: $archive_dir");
-
-    # Move all files from tmp_dir -> archive_dir
-    opendir(my $dh, $tmp_dir) or do {
-        PrintVerbose("Failed to open tmp_dir: $tmp_dir");
-        return;
-    };
-
-    while (my $file = readdir($dh)) {
-        next if $file =~ /^\.\.?$/;  # skip . and ..
-
-        my $src = File::Spec->catfile($tmp_dir, $file);
-        my $dst = File::Spec->catfile($archive_dir, $file);
-
-        if (rename($src, $dst)) {
-            PrintVerbose("Moved tmp artifact: $file -> $archive_dir");
-        } else {
-            PrintVerbose("Failed to move tmp artifact: $file");
-        }
-    }
-
-    closedir($dh);
-
-    PrintVerbose("tmp_dir cleanup complete: $tmp_dir is now empty");
-}
 
 #===============================================================================
 #                          Internal Subs
@@ -900,8 +833,9 @@ sub _DbInit {
     
     return ERROR if _EnsureInstallAndPlugin($ctx) != OK;
 
-    # Framework-level tmp_dir cleanup (before any plugin touches it)
-    CleanTmpDir($ctx);
+    # Framework-level tmp_dir and runtime cleanup (before any plugin touches it)
+    TAF::Utilities::CleanTmpDir($ctx);
+    TAF::Utilities::CleanRuntimeDir($ctx);
 
     # Delegate to the database subsystem
     my $rc = TAF::Database::DbInit($ctx);

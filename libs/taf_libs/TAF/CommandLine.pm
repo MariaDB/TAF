@@ -3,7 +3,7 @@ package TAF::CommandLine;
 # TAF::CommandLine
 #
 # Created: December 2025
-# Last Modified: March 2026
+# Last Modified: July 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -75,7 +75,7 @@ BEGIN {
 use TAF::Utilities;
 require toolsLib;
 
-our $VERSION = '2.5';
+our $VERSION = '3.0';
 
 #===============================================================================
 #                          Exported functions
@@ -156,6 +156,8 @@ sub ParseCommandLineOptions {
         #-----------------------------------------------------------------------
         "action:s"                      => \$tmp_ref->{action},
         "comments:s"                    => \$tmp_ref->{comments},
+        "backend-config:s"              => \$tmp_ref->{backend_config},
+        "backend-parser-jar:s"          => \$tmp_ref->{backend_parser_jar},
         "duration:s"                    => \$tmp_ref->{duration},
         "database-iteration-mode:s"     => \$tmp_ref->{database_iteration_mode},
         "database-restore-image-dir:s"  => \$tmp_ref->{database_restore_image_dir},
@@ -166,6 +168,9 @@ sub ParseCommandLineOptions {
         "include-warmup-iteration"      => \$tmp_ref->{include_warmup_iteration},
         "instances:i"                   => \$tmp_ref->{instances},
         "iterations:i"                  => \$tmp_ref->{iterations},
+        "java-bin:s"                    => \$tmp_ref->{java_bin},
+        "jdbc-jar:s"                    => \$tmp_ref->{jdbc_jar},
+        "json-jar:s"                    => \$tmp_ref->{json_jar},
         "restore-image-format"          => \$tmp_ref->{restore_image_format},
         "threads:s"                     => \$tmp_ref->{threads},
         "tests:s"                       => \$tmp_ref->{tests},
@@ -199,6 +204,7 @@ sub ParseCommandLineOptions {
         "database:s"                  => \$tmp_ref->{database},
         "db-config-file:s"            => \$tmp_ref->{db_config_file},
         "db-data-dir:s"               => \$tmp_ref->{db_data_dir},
+        "db-runtime-dir:s"            => \$tmp_ref->{db_runtime_dir},
         "db-engine:s"                 => \$tmp_ref->{db_engine},
         "db-extra-args:s"             => \$tmp_ref->{db_extra_args},
         "db-plugin-dir:s"             => \$tmp_ref->{db_plugin_dir},
@@ -217,12 +223,22 @@ sub ParseCommandLineOptions {
         #-----------------------------------------------------------------------
         # DB Process Start/Stop wait times
         #-----------------------------------------------------------------------
-        "db-start-wait"               => \$tmp_ref->{db_start_wait},
-        "db-stop-wait"                => \$tmp_ref->{db_stop_wait},
+        "db-start-wait:i"              => \$tmp_ref->{db_start_wait},
+        "db-stop-wait:i"               => \$tmp_ref->{db_stop_wait},
+
+        #-----------------------------------------------------------------------
+        # TAF Backend: Results thresholds
+        #-----------------------------------------------------------------------
+        "results-threshold-warning-pct:i"                => \$tmp_ref->{results_threshold_warning_pct},
+        "results-threshold-fail-pct:i"                   => \$tmp_ref->{results_threshold_fail_pct},
+        "results-threshold-gain-pct:i"                   => \$tmp_ref->{results_threshold_gain_pct},
+        "results-iteration-allowed-duration-drift-pct:i" => \$tmp_ref->{results_iteration_allowed_duration_drift_pct},
 
         #-----------------------------------------------------------------------
         # DB Process Rest Watch
         #-----------------------------------------------------------------------
+        
+        "db-process-pid:i"              => \$tmp_ref->{db_process_pid},
         "db-process-rest-enable"        => \$tmp_ref->{db_process_rest_enable},
         "db-process-rest-low:s"         => \$tmp_ref->{db_process_rest_low},
         "db-process-rest-high:s"        => \$tmp_ref->{db_process_rest_high},
