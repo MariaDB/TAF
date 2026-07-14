@@ -134,7 +134,7 @@ use strict;
 use warnings;
 use List::Util qw(max all);
 use sql_libs::Executor;
-Executor->import(':all');
+sql_libs::Executor->import(':all');
 
 use profile_libs::Runner;
 

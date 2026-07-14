@@ -176,7 +176,12 @@ install_pgdg_rpm() {
 
 # ─── 2c. APPSTREAM ─────────────────────────────────────────────────────────
 install_appstream() {
-    dnf install -y postgresql-server postgresql-devel
+    # On EL10, postgresql-server-devel conflicts with libpq-devel via
+    # postgresql-private-devel. Install postgresql-server + libpq-devel
+    # (provides libpq-fe.h for sysbench). pg_config comes from
+    # postgresql-server-devel; we fall back to hardcoded paths without it.
+    # --allowerasing removes postgresql-private-devel if already installed.
+    dnf install -y --allowerasing postgresql postgresql-server libpq-devel
     PG_INSTALL_DIR="/usr"
     warn "PostgreSQL installed from AppStream into ${PG_INSTALL_DIR}"
 }
@@ -193,7 +198,7 @@ esac
 step "Verifying PostgreSQL binaries"
 PG_BIN="${PG_INSTALL_DIR}/bin"
 MISSING=0
-for BIN in postgres pg_ctl psql initdb pg_isready pg_config; do
+for BIN in postgres pg_ctl psql initdb pg_isready; do
     if [[ -x "${PG_BIN}/${BIN}" ]]; then
         info "  ✓ ${PG_BIN}/${BIN}"
     else
@@ -203,9 +208,19 @@ for BIN in postgres pg_ctl psql initdb pg_isready pg_config; do
 done
 [[ $MISSING -eq 0 ]] || error "Missing binaries — check installation in ${PG_INSTALL_DIR}"
 
-info "PostgreSQL version: $("${PG_BIN}/pg_config" --version)"
-LIBPQ_INCDIR=$("${PG_BIN}/pg_config" --includedir)
-LIBPQ_LIBDIR=$("${PG_BIN}/pg_config" --libdir)
+# pg_config is provided by postgresql-server-devel, which conflicts with
+# libpq-devel on EL10 AppStream. It is only needed to locate libpq headers
+# for sysbench; fall back to hardcoded AppStream paths when unavailable.
+if [[ -x "${PG_BIN}/pg_config" ]]; then
+    info "PostgreSQL version: $("${PG_BIN}/pg_config" --version)"
+    LIBPQ_INCDIR=$("${PG_BIN}/pg_config" --includedir)
+    LIBPQ_LIBDIR=$("${PG_BIN}/pg_config" --libdir)
+else
+    warn "pg_config not found (postgresql-server-devel not installed); using AppStream defaults"
+    info "PostgreSQL version: $("${PG_BIN}/postgres" --version 2>/dev/null || echo unknown)"
+    LIBPQ_INCDIR="/usr/include"
+    LIBPQ_LIBDIR="/usr/lib64"
+fi
 info "includedir: ${LIBPQ_INCDIR}"
 info "libdir:     ${LIBPQ_LIBDIR}"
 
@@ -217,7 +232,7 @@ if [[ -f "${LIBPQ_INCDIR}/libpq-fe.h" ]]; then
     info "libpq-fe.h found: ${LIBPQ_INCDIR}/libpq-fe.h"
 else
     warn "libpq-fe.h not found, trying system packages..."
-    dnf install -y postgresql-devel libpq-devel 2>/dev/null || \
+    dnf install -y --allowerasing postgresql-devel libpq-devel 2>/dev/null || \
     dnf install -y postgresql16-devel 2>/dev/null || \
         warn "libpq-devel unavailable — sysbench build may fail"
 fi
@@ -290,17 +305,22 @@ elif [[ -x "${SYSBENCH_SRC}/sysbench" ]] && [[ ! -L "${SYSBENCH_SRC}/sysbench" ]
     warn "Rebuilding from source for correct architecture and libpq..."
 fi
 if [[ $SYSBENCH_OK -eq 0 ]]; then
-    if [[ ! -f "${SYSBENCH_SRC}/configure.ac" ]]; then
-        info "Cloning sysbench..."
+    # Submodule check: LuaJIT Makefile is only present after a proper git clone
+    # with --recurse-submodules. Zip-extracted source lacks .git/ so submodules
+    # are empty. Force a fresh clone whenever the submodule is missing.
+    if [[ ! -f "${SYSBENCH_SRC}/third_party/luajit/luajit/Makefile" ]]; then
+        info "Cloning sysbench (submodules missing or incomplete)..."
+        rm -rf "${SYSBENCH_SRC}"
         mkdir -p "${TAF_DIR}/client_source"
-        git clone --depth=1 https://github.com/akopytov/sysbench "${SYSBENCH_SRC}"
+        git clone --depth=1 --recurse-submodules https://github.com/akopytov/sysbench "${SYSBENCH_SRC}"
     fi
 
     info "Building sysbench with pgsql support..."
     cd "${SYSBENCH_SRC}"
 
-    ./autogen.sh
-    ./configure --without-mysql --with-pgsql \
+    # Use bash explicitly — files from a zip archive may lack execute bits.
+    bash autogen.sh
+    bash configure --without-mysql --with-pgsql \
         --with-pgsql-includes="${LIBPQ_INCDIR}" \
         --with-pgsql-libs="${LIBPQ_LIBDIR}"
     make -j"$(nproc)"
