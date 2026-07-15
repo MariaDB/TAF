@@ -3,7 +3,7 @@
 test_taf_postgresql.py — TAF PostgreSQL Integration Tests
 
 Layered test suite covering the complete PostgreSQL adaptation of TAF.
-Designed for AlmaLinux 10 + PostgreSQL 16 from PGDG.
+Designed for AlmaLinux 10 + PostgreSQL 18 from PGDG.
 
 Layers:
     L1  Static validation (syntax, grep) — no external dependencies
