@@ -7,20 +7,34 @@
 #
 # PostgreSQL installation methods (--method):
 #   percona   (default) — tarball from downloads.percona.com
-#                         https://docs.percona.com/postgresql/16/tarball.html
+#                         https://docs.percona.com/postgresql/18/tarball.html
 #   pgdg      — RPM from pgdg.postgresql.org
-#   appstream — system postgresql from dnf
+#   appstream — system postgresql from dnf (AlmaLinux 10 AppStream ships a
+#               versioned postgresql18 package alongside the unversioned
+#               postgresql (16) one; --allowerasing swaps 16 out for 18)
+#
+# EXPECTED_PG_VERSION (below) is pinned to 18.4 -- the current stable
+# PostgreSQL release as of 2026-07 (https://www.postgresql.org/docs/release/18.4/,
+# released 2026-05-14). Update it here when a newer release ships. All three
+# methods are verified against this after install; a mismatch is a hard error
+# (see step 3b) rather than a silent partial upgrade.
 #
 # After completion:
-#   - PostgreSQL 16 available in $PG_INSTALL_DIR
+#   - PostgreSQL 18.4 available in $PG_INSTALL_DIR
 #   - Python 3 + pytest installed
 #   - Build tools for sysbench ready
 #   - Env saved to .taf_pg_env (source before tests)
 #
 # Env variables (can be overridden before pytest):
-#   TAF_PG_INSTALL_DIR  (set automatically)
-#   TAF_PG_PORT         (default: 5433)
-#   TAF_MARIADB_DIR     (optional, for L6 regression test)
+#   TAF_PG_INSTALL_DIR    (set automatically)
+#   TAF_PG_PORT           (default: 5433)
+#   TAF_MARIADB_DIR       (optional, for L6 regression test)
+#   PERCONA_LOCAL_ARCHIVE (--method=percona only) path to an already-downloaded
+#                         percona-postgresql-*.tar.gz; skips the
+#                         downloads.percona.com fetch. Set by taf_manage.py
+#                         --PERCONA_ARCHIVE_LOCAL, which SCPs it here once from
+#                         the control machine instead of every guest fetching
+#                         it independently.
 # =============================================================================
 set -euo pipefail
 
@@ -34,6 +48,16 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 step()  { echo -e "\n${CYAN}━━━ $* ━━━${NC}"; }
 
 [[ $EUID -eq 0 ]] || error "Script must be run as root (sudo bash $0)"
+
+# ---------------------------------------------------------------------------
+# Expected PostgreSQL version (pre-test gate, step 3b)
+# ---------------------------------------------------------------------------
+# Pinned to the current stable PostgreSQL release. Verified 2026-07 against
+# https://www.postgresql.org/docs/release/18.4/ (released 2026-05-14).
+# Update this when a newer release ships -- installs of any --method that
+# don't produce this exact version fail hard rather than silently running
+# benchmarks against an unintended/outdated PostgreSQL version.
+EXPECTED_PG_VERSION="18.4"
 
 # ---------------------------------------------------------------------------
 # Parametry
@@ -76,29 +100,66 @@ dnf install -y \
     acl
 
 # ---------------------------------------------------------------------------
+# 1b. "postgres" OS user/group
+# ---------------------------------------------------------------------------
+# The appstream/pgdg RPM packages create this via their own %pre scriptlet,
+# but --method=percona just extracts a tarball -- nothing ever creates it.
+# postgres.pm's new() constructor requires an OS user literally named
+# "postgres" to drop root privileges before running initdb (PostgreSQL
+# refuses `initdb`/`postgres` as root unconditionally); without it, initdb
+# runs as root and fails with "initdb: error: cannot be run as root" on
+# every single host. Mirrors the standard RHEL/Fedora postgresql-server RPM
+# %pre scriptlet (group+user, system account, home /var/lib/pgsql) so the
+# result is identical regardless of --method, and running this unconditionally
+# for all three methods is a no-op if the RPM path already created it.
+step "Ensuring OS user/group 'postgres' exists"
+getent group postgres >/dev/null || groupadd -r postgres
+if getent passwd postgres >/dev/null; then
+    info "OS user 'postgres' already exists"
+else
+    mkdir -p /var/lib/pgsql
+    useradd -r -g postgres -d /var/lib/pgsql -s /bin/bash -c "PostgreSQL Server" postgres
+    chown postgres:postgres /var/lib/pgsql
+    info "OS user 'postgres' created (system account, home /var/lib/pgsql)"
+fi
+
+# ---------------------------------------------------------------------------
 # 2. POSTGRESQL — according to chosen method
 # ---------------------------------------------------------------------------
-step "Installing PostgreSQL 16 (method: ${METHOD})"
+step "Installing PostgreSQL ${EXPECTED_PG_VERSION} (method: ${METHOD})"
 
 PG_INSTALL_DIR=""
 LIBPQ_INCDIR=""
 LIBPQ_LIBDIR=""
 
 # ─── 2a. PERCONA TARBALL (default) ─────────────────────────────────────────
-# Dokumentace: https://docs.percona.com/postgresql/16/tarball.html
+# Dokumentace: https://docs.percona.com/postgresql/18/tarball.html
 install_percona_tarball() {
-    local VERSION="16.14"
+    local VERSION="18.4"
     local INSTALL_BASE="/opt/pgdistro"
-    local PG_SUBDIR="percona-postgresql16"
+    local PG_SUBDIR="percona-postgresql18"
 
-    # Detect OpenSSL version → choose tarball variant
+    # Detect OpenSSL version → choose tarball variant.
+    # PG18 tarballs ship three variants (unlike PG16's two: ssl1/ssl3) --
+    # ssl1.1, ssl3 (OpenSSL 3.0-3.4), and ssl3.5 (OpenSSL 3.5+). AlmaLinux 10
+    # ships OpenSSL 3.5.x, so the major-version-only check used for PG16
+    # would silently grab the wrong (but still installable) ssl3 build here;
+    # compare major.minor instead.
     local OPENSSL_VER
     OPENSSL_VER=$(openssl version | awk '{print $2}')
     local SSL_TAG
-    case "${OPENSSL_VER%%.*}" in
-        1) SSL_TAG="ssl1" ;;
-        3) SSL_TAG="ssl3" ;;
-        *) SSL_TAG="ssl3"; warn "Unknown OpenSSL version ${OPENSSL_VER}, trying ssl3" ;;
+    local ssl_major="${OPENSSL_VER%%.*}"
+    local ssl_minor="${OPENSSL_VER#*.}"; ssl_minor="${ssl_minor%%.*}"
+    case "$ssl_major" in
+        1) SSL_TAG="ssl1.1" ;;
+        3)
+            if [[ "$ssl_minor" -ge 5 ]]; then
+                SSL_TAG="ssl3.5"
+            else
+                SSL_TAG="ssl3"
+            fi
+            ;;
+        *) SSL_TAG="ssl3.5"; warn "Unknown OpenSSL version ${OPENSSL_VER}, trying ssl3.5" ;;
     esac
 
     # Map architecture to tarball name
@@ -110,14 +171,14 @@ install_percona_tarball() {
     esac
 
     local TARBALL="percona-postgresql-${VERSION}-${SSL_TAG}-${TARARCH}.tar.gz"
-    local URL="https://downloads.percona.com/downloads/postgresql-distribution-16/${VERSION}/binary/tarball/${TARBALL}"
+    local URL="https://downloads.percona.com/downloads/postgresql-distribution-18/${VERSION}/binary/tarball/${TARBALL}"
 
     info "Tarball: ${TARBALL}"
     info "URL:     ${URL}"
 
     # Skip if binary already exists
     if [[ -x "${INSTALL_BASE}/${PG_SUBDIR}/bin/postgres" ]]; then
-        info "Percona PostgreSQL 16 already installed in ${INSTALL_BASE}/${PG_SUBDIR}"
+        info "Percona PostgreSQL 18 already installed in ${INSTALL_BASE}/${PG_SUBDIR}"
         PG_INSTALL_DIR="${INSTALL_BASE}/${PG_SUBDIR}"
         return 0
     fi
@@ -125,7 +186,17 @@ install_percona_tarball() {
     mkdir -p "${INSTALL_BASE}"
 
     local TMPTAR="/tmp/${TARBALL}"
-    if [[ ! -f "$TMPTAR" ]]; then
+    # Fetch-once-distribute: with N guests all running setup at once, N
+    # independent downloads hammer downloads.percona.com. If the orchestrator
+    # already staged a copy here (taf_manage.py --PERCONA_ARCHIVE_LOCAL, SCP'd
+    # to REMOTE_WORKDIR before setup), use it instead of downloading.
+    if [[ -n "${PERCONA_LOCAL_ARCHIVE:-}" ]] && [[ -f "$PERCONA_LOCAL_ARCHIVE" ]]; then
+        info "Using pre-staged tarball: ${PERCONA_LOCAL_ARCHIVE}"
+        local abs_src abs_dst
+        abs_src=$(readlink -f "$PERCONA_LOCAL_ARCHIVE")
+        abs_dst=$(readlink -f "$TMPTAR" 2>/dev/null || echo "")
+        [[ "$abs_src" != "$abs_dst" ]] && cp "$PERCONA_LOCAL_ARCHIVE" "$TMPTAR"
+    elif [[ ! -f "$TMPTAR" ]]; then
         info "Downloading tarball..."
         wget -q --show-progress -O "$TMPTAR" "$URL" 2>/dev/null || \
         wget -O "$TMPTAR" "$URL" || \
@@ -151,12 +222,12 @@ install_percona_tarball() {
     local PG_LIB="${PG_INSTALL_DIR}/lib"
     if [[ -d "$PG_LIB" ]]; then
         export LD_LIBRARY_PATH="${PG_LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-        cat > /etc/profile.d/percona-pg16.sh <<PROFILE
-# Percona PostgreSQL 16 — added by setup_almalinux10.sh
+        cat > /etc/profile.d/percona-pg18.sh <<PROFILE
+# Percona PostgreSQL 18 — added by setup_almalinux10.sh
 export PATH="${PG_INSTALL_DIR}/bin:\$PATH"
 export LD_LIBRARY_PATH="${PG_LIB}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 PROFILE
-        info "Profile written: /etc/profile.d/percona-pg16.sh"
+        info "Profile written: /etc/profile.d/percona-pg18.sh"
     fi
 }
 
@@ -166,8 +237,8 @@ install_pgdg_rpm() {
     if dnf install -y "$PG_REPO_RPM" 2>/dev/null; then
         info "PGDG repository added"
         dnf -qy module disable postgresql 2>/dev/null || true
-        dnf install -y postgresql16-server postgresql16-devel postgresql16
-        PG_INSTALL_DIR="/usr/pgsql-16"
+        dnf install -y postgresql18-server postgresql18-devel postgresql18
+        PG_INSTALL_DIR="/usr/pgsql-18"
     else
         warn "PGDG EL10 repo unavailable, falling back to AppStream"
         install_appstream
@@ -176,14 +247,17 @@ install_pgdg_rpm() {
 
 # ─── 2c. APPSTREAM ─────────────────────────────────────────────────────────
 install_appstream() {
-    # On EL10, postgresql-server-devel conflicts with libpq-devel via
-    # postgresql-private-devel. Install postgresql-server + libpq-devel
-    # (provides libpq-fe.h for sysbench). pg_config comes from
-    # postgresql-server-devel; we fall back to hardcoded paths without it.
-    # --allowerasing removes postgresql-private-devel if already installed.
-    dnf install -y --allowerasing postgresql postgresql-server libpq-devel
+    # AlmaLinux 10 AppStream ships both the unversioned "postgresql" (16, the
+    # default stream) and a versioned "postgresql18" package set side by
+    # side; they conflict at the file level (postgresql-any / postgresql-
+    # server-any virtual provides), so --allowerasing is required to swap 16
+    # out for 18 on a base image that already has 16 installed.
+    # libpq-devel is version-independent (provides libpq-fe.h for sysbench)
+    # and does not conflict with postgresql18-*.
+    dnf install -y --allowerasing postgresql18 postgresql18-server libpq-devel
     PG_INSTALL_DIR="/usr"
     warn "PostgreSQL installed from AppStream into ${PG_INSTALL_DIR}"
+    warn "AppStream may lag behind the latest point release (EXPECTED_PG_VERSION=${EXPECTED_PG_VERSION:-18.4}) -- the version check in step 3b will fail loudly if so; use --method=percona for a guaranteed exact match."
 }
 
 case "$METHOD" in
@@ -223,6 +297,23 @@ else
 fi
 info "includedir: ${LIBPQ_INCDIR}"
 info "libdir:     ${LIBPQ_LIBDIR}"
+
+# ---------------------------------------------------------------------------
+# 3b. VERIFY POSTGRESQL VERSION MATCHES EXPECTED CURRENT STABLE RELEASE
+# ---------------------------------------------------------------------------
+# Any installed version other than EXPECTED_PG_VERSION is a hard error --
+# better to fail loudly here than to silently benchmark an unintended
+# PostgreSQL version (e.g. AppStream lagging a point release behind, or a
+# stale cached tarball/RPM repo).
+step "Verifying PostgreSQL version"
+ACTUAL_PG_VERSION=$("${PG_BIN}/postgres" --version | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+if [[ -z "$ACTUAL_PG_VERSION" ]]; then
+    error "Could not determine installed PostgreSQL version from '${PG_BIN}/postgres --version'"
+fi
+if [[ "$ACTUAL_PG_VERSION" != "$EXPECTED_PG_VERSION" ]]; then
+    error "Installed PostgreSQL version ${ACTUAL_PG_VERSION} != expected ${EXPECTED_PG_VERSION} (method=${METHOD}, dir=${PG_INSTALL_DIR}). Either a newer release has shipped (update EXPECTED_PG_VERSION at the top of this script), or this --method's repo/tarball is out of date for the pinned version -- try a different --method (percona guarantees an exact-version tarball)."
+fi
+info "PostgreSQL version OK: ${ACTUAL_PG_VERSION}"
 
 # ---------------------------------------------------------------------------
 # 4. LIBPQ HEADERS FOR SYSBENCH
