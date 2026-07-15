@@ -5,9 +5,6 @@ package postgres;
 # Created:       June 2026
 # Last Modified: June 2026
 #
-# This file is part of the Test Automation Framework (TAF).
-# Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
-#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation; version 2 or later of the License.
