@@ -169,7 +169,7 @@ use constant FALSE      => 0;
 #         db_root_user             - Root username (default: root).
 #         db_root_pass             - Root password (post-bootstrap).
 #
-#         db_task_set              - Optional CPU affinity list.
+#         db_cpu_affinity          - Optional CPU affinity list.
 #         tmp_dir                  - Temporary directory for logs and sockets.
 #         db_runtime_dir           - Runtime directory for pid, socket, and logs.
 #         db_extra_args            - Additional mysqld command-line arguments.
@@ -249,7 +249,6 @@ sub new {
         db_root_pass   => $args{db_root_pass}       // 'MariadbPass_@123',
 
         # Locality and performance
-        cpus           => $args{db_task_set},
         db_start_wait  => $args{db_start_wait},
         db_stop_wait   => $args{db_stop_wait},
         tmpdir         => $args{tmp_dir},
@@ -259,6 +258,9 @@ sub new {
 
         # Extras
         extra_args     => $args{db_extra_args},
+        
+        # CPU Affinity (normalized list from Database.pm)
+        db_cpu_affinity  => $args{db_cpu_affinity},
 
         # Permission flags
         users_created        => FALSE,
@@ -566,14 +568,12 @@ sub db_start {
     }
 
     # CPU affinity (taskset wrapper)
-    if ($self->{cpus}) {
-        my @affinity = ref $self->{cpus} eq 'ARRAY'
-            ? @{$self->{cpus}}
-            : grep { length } split(/\s*,\s*/, $self->{cpus});
-
+    if (defined $self->{db_cpu_affinity} && ref $self->{db_cpu_affinity} eq 'ARRAY') {
+        my @affinity = @{$self->{db_cpu_affinity}};
         if (@affinity) {
             my $affinity_str = join(",", @affinity);
             unshift @cmd, "taskset", "-c", $affinity_str;
+            PrintVerbose($_st."Applying CPU affinity: $affinity_str");
         }
     }
 

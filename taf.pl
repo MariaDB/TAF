@@ -4,7 +4,7 @@
 #
 # Created:       August 2025 (TAF 1.0)
 # Redesign:      Novemeber 2025 (TAF 2.0 architecture)
-# Last Modified: June 2026
+# Last Modified: July 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -137,7 +137,7 @@
 #############################################################################
 use constant FRAMEWORK          => "taf-perl";
 use constant FRAMEWORK_VERSION  => 3;
-use constant FRAMEWORK_REVISION => 0;
+use constant FRAMEWORK_REVISION => 1;
 
 #-------------------------------------------------------------------------------
 #                              Constants
@@ -474,6 +474,7 @@ our %options = (
     "database"                   => undef, # Database name
     "db_clients_use_unix_socket" => undef, # Tells client to use socket for connection
     "db_config_file"             => undef, # Database config file
+    "db_cpu_affinity"            => undef, # cpus to bind database process to.
     "db_data_dir"                => undef, # Database data directory
     "db_engine"                  => undef, # Database engine (if supported)
     "db_extra_args"              => undef, # Extra args passed on start
@@ -489,7 +490,6 @@ our %options = (
     "db_ssl_key"                 => undef, # Path to client private key file
     "db_ssl_crl"                 => undef, # Path to certificate revocation list (optional)
     "db_ssl_cipher"              => undef, # Cipher list for SSL connections (optional).
-    "db_task_set"                => undef, # task_set if supported
     "db_trans_logs_dir"          => undef, # Redo/undo logs if separate
     "db_use_native_for_passwords"=> undef, # Native password mysql/mariadb
     "db_user"                    => undef, # DB user for tests

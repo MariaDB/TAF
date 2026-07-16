@@ -5,6 +5,8 @@ package db_plugin_template;
 # Created: December 2025
 # Last Modified: June 2026
 #
+# VERSION: 3.1
+#
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
 #
@@ -143,8 +145,8 @@ sub new {
         db_root_pass   => $args{db_root_pass}       // 'MariadbPass_@123',
 
         # Locality and performance
-        cpus           => $args{db_task_set},
-        tmpdir         => $args{tmp_dir},
+        db_cpu_affinity => $args{db_cpu_affinity},
+        tmpdir          => $args{tmp_dir},
 
         # Runtime directory for pid, sock, logs, auto.cnf, ibtmp1, etc.
         runtime_dir    => $args{db_runtime_dir} // $args{tmp_dir},

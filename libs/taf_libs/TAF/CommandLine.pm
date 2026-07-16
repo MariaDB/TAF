@@ -75,7 +75,7 @@ BEGIN {
 use TAF::Utilities;
 require toolsLib;
 
-our $VERSION = '3.0';
+our $VERSION = '3.1';
 
 #===============================================================================
 #                          Exported functions
@@ -203,6 +203,7 @@ sub ParseCommandLineOptions {
         "taf-db-makers-plugin:s"      => \$tmp_ref->{taf_db_makers_plugin},
         "database:s"                  => \$tmp_ref->{database},
         "db-config-file:s"            => \$tmp_ref->{db_config_file},
+        "db-cpu-affinity:s"           => \$tmp_ref->{db_cpu_affinity},
         "db-data-dir:s"               => \$tmp_ref->{db_data_dir},
         "db-runtime-dir:s"            => \$tmp_ref->{db_runtime_dir},
         "db-engine:s"                 => \$tmp_ref->{db_engine},
@@ -217,7 +218,6 @@ sub ParseCommandLineOptions {
         "db-user-permissions:s"       => \$tmp_ref->{db_user_permissions},
         "db-socket:s"                 => \$tmp_ref->{db_socket},
         "db-clients-use-unix-socket"  => \$tmp_ref->{db_clients_use_unix_socket},
-        "db-task-set:s"               => \$tmp_ref->{db_task_set},
         "db-trans-logs-dir:s"         => \$tmp_ref->{db_trans_logs_dir},
 
         #-----------------------------------------------------------------------

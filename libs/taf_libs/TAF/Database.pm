@@ -3,7 +3,7 @@ package TAF::Database;
 # TAF::Database
 #
 # Created: December 2025
-# Last Modified: June 2026
+# Last Modified: July 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -113,10 +113,11 @@ use TAF::Utilities qw(
     NormalizePluginName
     GetInstallActions
     TrailingSlash
+    ValidateAndNormalizeCpuAffinity
 );
 
 use constant TAF_DATABASE => 'TAF::Database-> ';
-our $VERSION = '3.0';
+our $VERSION = '3.1';
 
 #===============================================================================
 #                              Exports
@@ -924,6 +925,18 @@ sub ValidateInstallLoadDbPlugin {
     }
 
     #---------------------------------------------------------------------
+    # cpu affinity check, and setup
+    #---------------------------------------------------------------------
+    if (defined $options_ref->{db_cpu_affinity}) {
+        my $rc = TAF::Utilities::ValidateAndNormalizeCpuAffinity($ctx);
+        if ($rc != OK) {
+            PrintError("Invalid CPU affinity expression");
+            return ERROR;
+        }
+    }
+
+
+    #---------------------------------------------------------------------
     # Load plugin
     #---------------------------------------------------------------------
     PrintVerbose($vi . "Loading database plugin: $resolved");
@@ -1306,7 +1319,6 @@ sub _LoadDbPlugin {
         db_port                 => $options_ref->{db_port},
         db_socket               => $options_ref->{db_socket},
         db_engine               => $options_ref->{db_engine},
-        db_task_set             => $options_ref->{db_task_set},
 
         # Security and SSL
         db_ssl_mode             => $options_ref->{db_ssl_mode},
@@ -1332,6 +1344,7 @@ sub _LoadDbPlugin {
         db_extra_args           => $options_ref->{db_extra_args},
         db_start_wait           => $options_ref->{db_start_wait},
         db_stop_wait            => $options_ref->{db_stop_wait},
+        db_cpu_affinity         => $options_ref->{db_cpu_affinity},
     );
 
     PrintVerbose($ldb . "Instantiating plugin '$plugin_name' with arguments:");

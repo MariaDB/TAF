@@ -3,9 +3,9 @@ package mariadb;
 # mariadb.pm - MariaDB Database Plugin for TAF
 #
 # Created:       January 2026
-# Last Modified: June 2026
+# Last Modified: July 2026
 #
-# Vesion: 3.0
+# Vesion: 3.1
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -199,6 +199,9 @@ sub new {
         port           => $args{db_port}   // 3306,
         socket         => $args{db_socket},
 
+        # CPU Affinity (normalized list from Database.pm)
+        db_cpu_affinity  => $args{db_cpu_affinity},
+
         # Engine
         engine         => $args{db_engine} // 'InnoDB',
 
@@ -224,7 +227,6 @@ sub new {
         db_root_pass   => $args{db_root_pass}       // 'MariadbPass_@123',
 
         # Locality and performance
-        cpus           => $args{db_task_set},
         db_start_wait  => $args{db_start_wait},
         db_stop_wait   => $args{db_stop_wait},
         tmpdir         => $args{tmp_dir},
@@ -530,6 +532,16 @@ sub db_start {
     # Extra args
     if ($self->{extra_args}) {
         push @cmd, split(/\s+/, $self->{extra_args});
+    }
+
+    # CPU affinity (taskset wrapper)
+    if (defined $self->{db_cpu_affinity} && ref $self->{db_cpu_affinity} eq 'ARRAY') {
+        my @affinity = @{$self->{db_cpu_affinity}};
+        if (@affinity) {
+            my $affinity_str = join(",", @affinity);
+            unshift @cmd, "taskset", "-c", $affinity_str;
+            PrintVerbose($_st."Applying CPU affinity: $affinity_str");
+        }
     }
 
     PrintVerbose($_st."Starting MariaDB runtime server");

@@ -3,7 +3,7 @@ package TAF::Utilities;
 # TAF::Utilities
 #
 # Created: December 2025
-# Last Modified: June 2026
+# Last Modified: July 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -79,7 +79,7 @@ package TAF::Utilities;
 #       install-type inference pipeline and must remain stable unless
 #       coordinated with DatabaseSoftwareInstalls.
 #############################################################################
-our $VERSION = '3.0';
+our $VERSION = '3.1';
 #===============================================================================
 #                            Imports
 #===============================================================================
@@ -165,6 +165,7 @@ our @EXPORT = qw(
     Usage
     UsageError
     ValidateContext
+    ValidateAndNormalizeCpuAffinity
 );
 
 #===============================================================================
@@ -2169,6 +2170,123 @@ sub ValidateContext {
     }
 
     return TRUE;
+}
+
+#===============================================================================
+# ValidateAndNormalizeCpuAffinity
+#
+# PURPOSE:
+#     Parse, validate, and normalize the CPU affinity expression provided in the
+#     TAF framework context ($ctx). Ensures that the user-supplied affinity
+#     string is syntactically valid, expands ranges, removes duplicates, and
+#     verifies that all CPU numbers fall within the host's available CPU range.
+#     Produces a normalized array reference of CPU integers suitable for use by
+#     database plugins when applying taskset-based CPU pinning.
+#
+# PARAMETERS:
+#     $ctx
+#         Hash reference representing the framework context. The CPU affinity
+#         expression must be located in:
+#             $ctx->{options}{cpu_affinity}
+#
+# BEHAVIOR:
+#     - Reject empty or whitespace-only affinity expressions.
+#     - Split the expression on commas into individual tokens.
+#     - For each token:
+#           * Accept single integers (e.g., "3").
+#           * Accept ranges in the form "a-b" where a <= b.
+#           * Reject invalid tokens or malformed ranges.
+#     - Expand ranges into individual CPU numbers.
+#     - Remove duplicate CPU numbers.
+#     - Reject an empty list after normalization.
+#     - Validate each CPU number against the host CPU count (0..CPU_COUNT-1).
+#     - On success, update:
+#           $ctx->{options}{cpu_affinity} = \@normalized_list
+#
+# RETURNS:
+#     OK
+#         CPU affinity expression is valid and normalized.
+#
+#     ERROR
+#         CPU affinity expression is invalid. A descriptive error message is
+#         emitted via PrintError(), and no updates are made to the affinity list.
+#
+# NOTES:
+#     - This routine validates syntax and host-range correctness only. It does
+#       not inspect CPU topology, core type, NUMA layout, or scheduler behavior.
+#     - Database plugins must not perform validation; they consume only the
+#       normalized list produced here.
+#===============================================================================
+sub ValidateAndNormalizeCpuAffinity {
+    my ($ctx) = @_;
+
+    my $opts   = $ctx->{options};
+    my $raw    = $opts->{db_cpu_affinity};
+    my $reason = "";
+    my @normalized = ();
+
+    # Empty or whitespace-only is invalid
+    if (!defined $raw || $raw =~ /^\s*$/) {
+        PrintError("CPU affinity expression is empty");
+        return ERROR;
+    }
+
+    # Split on commas
+    my @tokens = split(/,/, $raw);
+
+    foreach my $t (@tokens) {
+        $t =~ s/^\s+|\s+$//g;   # trim
+
+        # Range: a-b
+        if ($t =~ /^(\d+)\-(\d+)$/) {
+            my ($start, $end) = ($1, $2);
+
+            if ($start > $end) {
+                PrintError("Invalid range '$t' (start > end)");
+                return ERROR;
+            }
+
+            for (my $i = $start; $i <= $end; $i++) {
+                push @normalized, $i;
+            }
+        }
+        # Single integer
+        elsif ($t =~ /^\d+$/) {
+            push @normalized, int($t);
+        }
+        else {
+            PrintError("Invalid token '$t' in CPU affinity expression");
+            return ERROR;
+        }
+    }
+
+    # Remove duplicates
+    my %seen = ();
+    @normalized = grep { !$seen{$_}++ } @normalized;
+
+    # Must not be empty
+    if (!@normalized) {
+        PrintError("CPU affinity list is empty after normalization");
+        return ERROR;
+    }
+
+    # Validate CPU range
+    my $cpu_count = toolsLib::GetSystemCpuCount();
+    if (!defined $cpu_count || $cpu_count !~ /^\d+$/) {
+        PrintError("Host CPU count is invalid or unavailable");
+        return ERROR;
+    }
+
+    foreach my $cpu (@normalized) {
+        if ($cpu < 0 || $cpu >= $cpu_count) {
+            PrintError("CPU '$cpu' is outside valid range 0..".($cpu_count-1));
+            return ERROR;
+        }
+    }
+
+    # All good: update ctx options
+    $opts->{db_cpu_affinity} = \@normalized;
+    return OK;
 }
 
 ################################################################################

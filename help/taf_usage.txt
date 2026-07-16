@@ -443,6 +443,16 @@ Note: setup-client
                    : preparation. All SSL configuration must be provided
                    : through TAF options only.
 
+   O = --db-cpu-affinity=<list|range>
+   P = taf.db_cpu_affinity=<list|range>
+                   : CPU affinity for the database engine.
+                   : Pins the database process to specific CPUs.
+                   : Valid forms:
+                   :   0,1,2,3
+                   :   0-11
+                   :   (future) 0-3,8,10-12
+                   : If unset (null), the database runs on all CPUs.
+
    O = --db-data-dir=<path>
    P = taf.db_data_dir=<path>
                    : Database data directory.
