@@ -2,8 +2,8 @@
 # hammerdb-tprocc.pm - HammerDB TPROCC Test Suite for TAF
 #
 # Created: October 2025
-# Last Modified: January 2026
-# Version: 2.0
+# Last Modified: July 2026
+# Version: 2.1
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -834,9 +834,9 @@ sub ParseResult {
             next;
         }
 
-        if ($line =~ /^(\w+)\s+Calls:/) {
-            if (my $parsed = ParseTransactionBlock($line, $1)) {
-                push @results, $parsed;
+        if ($line =~ /^\s*(\w+)\s+Calls:/) {
+            if (my @parsed = ParseTransactionBlock($line, $1)) {
+                push @results, @parsed;
             }
             next;
         }
