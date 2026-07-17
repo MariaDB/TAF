@@ -175,6 +175,7 @@ use constant {
 #           - taf_var.framework
 #           - taf_var.framework_ver
 #           - taf_var.framework_rev
+#           - taf_var.framework_patch
 #
 # BEHAVIOR:
 #     - Validate logs_dir and run_log from the context.
@@ -211,6 +212,7 @@ sub InitLogging {
     my $framework        = $ctx->{taf_var}{framework};        # optional if you store it
     my $frameworkVersion = $ctx->{taf_var}{framework_ver};
     my $frameworkRevision= $ctx->{taf_var}{framework_rev};
+    my $frameworkPatch   = $ctx->{taf_var}{framework_patch};
 
     # Validate required paths
     unless (defined $options->{logs_dir} && defined $files->{run_log}) {
@@ -240,10 +242,12 @@ sub InitLogging {
     # Get current date/time from ctx date object
     my $dateTime = $Obj->{date}->GetDateTime();
 
+    my $tafVersion = "$frameworkVersion.$frameworkRevision.$frameworkPatch";
+
     # Print framework metadata
     PrintLine("*", 80);
     PrintVerbose("Framework              : $framework") if defined $framework;
-    PrintVerbose("Framework Version      : $frameworkVersion.$frameworkRevision");
+    PrintVerbose("Framework Version      : $tafVersion");
     PrintVerbose("Date                   : $dateTime");
     PrintVerbose("Run Log initialized at : $tmpLogVar");
     PrintLine("*", 80);
@@ -379,7 +383,10 @@ sub PrintAllVariables {
     my $framework         = $taf_var->{framework};
     my $frameworkVersion  = $taf_var->{framework_ver};
     my $frameworkRevision = $taf_var->{framework_rev};
-
+    my $frameworkPatch    = $taf_var->{framework_patch};
+    
+    PrintVerbose("Framework Version: $frameworkVersion.$frameworkRevision.$frameworkPatch");
+    
     # Command line (stored in ctx by InitializeFramework)
     my $commandLine = $taf_var->{org_cmdline};
 

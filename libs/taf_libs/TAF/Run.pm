@@ -1454,6 +1454,7 @@ sub WriteReadmeStart {
         ["Framework",         $taf_vars->{framework}],
         ["Framework Version", $taf_vars->{framework_ver}],
         ["Framework Rev",     $taf_vars->{framework_rev}],
+        ["Framework Patch",   $taf_vars->{framework_patch}],
         ["TAF Commandline",   $taf_vars->{upd_cmdline}],
     );
 

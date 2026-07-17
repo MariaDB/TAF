@@ -138,6 +138,7 @@
 use constant FRAMEWORK          => "taf-perl";
 use constant FRAMEWORK_VERSION  => 3;
 use constant FRAMEWORK_REVISION => 1;
+use constant FRAMEWORK_PATCH    => 1;
 
 #-------------------------------------------------------------------------------
 #                              Constants
@@ -282,6 +283,7 @@ our %taf_var = (
     framework                    => FRAMEWORK,
     framework_ver                => FRAMEWORK_VERSION,
     framework_rev                => FRAMEWORK_REVISION,
+    framework_patch              => FRAMEWORK_PATCH,
     org_cmdline                  => $commandLine,
     upd_cmdline                  => $commandLine,
     start_time                   => $obj{date}->GetOrgStartTime(),
@@ -1033,7 +1035,7 @@ sub _InitialProcessingCommandLine{
     TAF::Properties::ApplyOverrides($ctx, $tmpoptions_ref);
 
     # Check and handle flags early (help, list, version, db software installs)
-    TAF::Utilities::HandleInfoFlags($ctx, FRAMEWORK_VERSION, FRAMEWORK_REVISION);
+    TAF::Utilities::HandleInfoFlags($ctx);
     
     return $tmpoptions_ref;
 }

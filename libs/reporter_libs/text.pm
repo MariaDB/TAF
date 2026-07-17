@@ -156,6 +156,7 @@ sub GenerateResults {
     print $fh sprintf("%-22s %s\n", "Framework:",         SafeVal($meta, 'framework'));
     print $fh sprintf("%-22s %s\n", "Framework Version:", SafeVal($meta, 'framework_version'));
     print $fh sprintf("%-22s %s\n", "Framework Rev:",     SafeVal($meta, 'framework_rev'));
+    print $fh sprintf("%-22s %s\n", "Framework Patch:",   SafeVal($meta, 'framework_patch'));
 
     # -------------------------------------------------------------------------
     # Host Info
@@ -226,7 +227,7 @@ sub GenerateResults {
     print $fh "\n=== Extra Metadata ===\n\n";
 
     my %skip = map { $_ => 1 } qw(
-        framework framework_version framework_rev taf_commandline
+        framework framework_version framework_rev framework_patch taf_commandline
         test_suite test_suite_source_file test_suite_version test_suite_revision
         test_client_version test_name test_type comments duration iteration
         threads warmup_threads warmup_duration test_host os os_version os_arch

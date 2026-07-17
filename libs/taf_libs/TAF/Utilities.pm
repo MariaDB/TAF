@@ -1092,16 +1092,18 @@ sub Interrupt {
 #     - Contributor-proof discipline: explicit, deterministic flag handling.
 #===============================================================================
 sub HandleInfoFlags {
-    my ($ctx,
-        $frameworkVersion, 
-        $frameworkRevision) = @_;
+    my ($ctx) = @_;
 
     my $flags_ref = $ctx->{flags};
     my $help_file = $ctx->{files}{help_file};
 
     # List out FW Version
     if ($flags_ref->{list_version}) {
-        TAF::Logging::Print(" TAF version: ".$frameworkVersion.".".$frameworkRevision);
+        my $frameworkVersion  = $ctx->{taf_var}{framework_ver};
+        my $frameworkRevision = $ctx->{taf_var}{framework_rev};
+        my $frameworkPatch    = $ctx->{taf_var}{framework_patch};
+        my $tarVer = "$frameworkVersion.$frameworkRevision.$frameworkPatch";
+        TAF::Logging::Print(" TAF version: ".$tarVer);
         main::QuickExit();
     }
     # Present help to screen for user
