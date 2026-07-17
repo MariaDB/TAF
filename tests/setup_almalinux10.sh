@@ -399,15 +399,42 @@ if [[ $SYSBENCH_OK -eq 0 ]]; then
     # Submodule check: LuaJIT Makefile is only present after a proper git clone
     # with --recurse-submodules. Zip-extracted source lacks .git/ so submodules
     # are empty. Force a fresh clone whenever the submodule is missing.
+    #
+    # Retry with backoff: a fleet-wide run clones this from GitHub on every
+    # guest concurrently (e.g. 210 at once for a full density curve), which
+    # occasionally hits transient network/server flakiness -- observed as
+    # `fatal: shallow file has changed since we read it` on a small fraction
+    # of hosts. A single failed attempt used to abort the whole host's setup
+    # (and, via taf_manage.py, could burn one of only 2 host-level retries on
+    # something that a plain retry here would have absorbed). Always
+    # `rm -rf` before each attempt so a partial/corrupt clone from a failed
+    # attempt can't linger into the next one.
     if [[ ! -f "${SYSBENCH_SRC}/third_party/luajit/luajit/Makefile" ]]; then
-        info "Cloning sysbench (submodules missing or incomplete)..."
-        rm -rf "${SYSBENCH_SRC}"
         mkdir -p "${TAF_DIR}/client_source"
-        git clone --depth=1 --recurse-submodules https://github.com/akopytov/sysbench "${SYSBENCH_SRC}"
+        clone_ok=0
+        for attempt in 1 2 3; do
+            info "Cloning sysbench (submodules missing or incomplete, attempt ${attempt}/3)..."
+            rm -rf "${SYSBENCH_SRC}"
+            if git clone --depth=1 --recurse-submodules https://github.com/akopytov/sysbench "${SYSBENCH_SRC}"; then
+                clone_ok=1
+                break
+            fi
+            warn "sysbench clone attempt ${attempt}/3 failed"
+            [[ $attempt -lt 3 ]] && sleep $((attempt * 10))
+        done
+        [[ $clone_ok -eq 1 ]] || error "Failed to clone sysbench after 3 attempts"
     fi
 
     info "Building sysbench with pgsql support..."
     cd "${SYSBENCH_SRC}"
+
+    # Always start configure from a clean cache: a config.cache left over from
+    # a previous (possibly killed mid-build, or differently-configured) attempt
+    # on this same guest gets blindly trusted by autoconf, including for
+    # checks that should never vary by host (e.g. "checking for stdlib.h...
+    # (cached) no" was observed leading straight into a bogus "thread-local
+    # storage is not supported" failure). A stale cache is worse than no cache.
+    rm -f config.cache
 
     # Use bash explicitly — files from a zip archive may lack execute bits.
     bash autogen.sh
