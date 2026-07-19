@@ -1356,7 +1356,8 @@ sub ValidateTargetWithSuite {
 
         my $expected   = $tsOpt{db_driver};
     my $normalized = NormalizeDBType($incoming) // lc($incoming);
-    if ($normalized eq lc($expected)) {
+    my $expected_normalized = NormalizeDBType($expected) // lc($expected);
+    if ($normalized eq $expected_normalized) {
         PrintVerbose($vt."db_driver match db maker $incoming (normalized: $normalized), returning OK.");
         StageEnd($vt);
         return OK;
