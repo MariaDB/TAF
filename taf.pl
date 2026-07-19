@@ -409,6 +409,7 @@ our %flags = (
     list_test_suites_help              => FALSE,
     list_test_types                    => FALSE,
     list_version                       => FALSE,
+    debug_print_config                 => FALSE,
     purge_archive                      => FALSE,
     purge_data_directory               => FALSE,
     purge_results_directory            => FALSE,
@@ -1132,6 +1133,57 @@ sub _LoadProperties{
 
     # Apply commandline overrides again, now that all properties are known
     TAF::Properties::ApplyOverrides($ctx, $tmpoptions_ref);
+
+    # Dump the fully resolved configuration when requested
+    main::_PrintDebugConfig();
+}
+
+###############################################################################
+# _PrintDebugConfig
+#
+# PURPOSE:
+#     When --debug-print-config is given, dump the fully resolved %options,
+#     %dirs, and %files hashes, plus the full process environment (%ENV), to
+#     STDERR. %options/%dirs/%files are the merged result of default
+#     properties, user properties, and command-line overrides -- the same
+#     state the rest of the framework operates on from this point on. %ENV is
+#     included because TAF and the DB software it drives both pick up
+#     behavior from inherited environment variables (paths, locale, etc.)
+#     that never go through the properties/CLI system at all.
+#
+# CONTRACT:
+#     - Must run only after _LoadProperties has merged all property sources.
+#     - Must print to STDERR, never STDOUT.
+#     - Must not terminate the run; this is a diagnostic side effect only.
+#     - Must redact known secret-shaped keys (passwords).
+#     - Must print every line as a YAML comment ("# ..."), with each
+#       section's entries indented 4 spaces per level, so the dump can be
+#       pasted straight into a YAML file (e.g. result.yaml) as a readable
+#       comment block instead of opaque "key = value" text.
+###############################################################################
+sub _PrintDebugConfig {
+    return unless $flags{debug_print_config};
+
+    # Case-insensitive substring match, not an exact-key list: %ENV in
+    # particular carries secrets under names %options/%dirs/%files never
+    # use (PGPASSWORD, MYSQL_PWD, AWS_SECRET_*, ...). Mirrors (and adds PWD
+    # to) get_envinfo_standalone.py's SENSITIVE_ENV_RE -- MYSQL_PWD is what
+    # collect_db_config.sh itself sets to authenticate, and "PASS" alone
+    # doesn't match it.
+    my $redact_re = qr/(AUTH|COOKIE|CREDENTIAL|PASS|PWD|PRIVATE|SECRET|TOKEN)/i;
+
+    print STDERR "\n# === TAF RESOLVED CONFIGURATION (--debug-print-config) ===\n";
+    for my $section (["options", \%options], ["dirs", \%dirs], ["files", \%files], ["ENV", \%ENV]) {
+        my ($name, $href) = @$section;
+        print STDERR "# $name:\n";
+        for my $key (sort keys %$href) {
+            my $value = $href->{$key};
+            $value = defined($value) ? $value : '<undef>';
+            $value = '***REDACTED***' if $key =~ $redact_re && $value ne '<undef>' && $value ne '';
+            print STDERR "#     $key: $value\n";
+        }
+    }
+    print STDERR "# === END TAF RESOLVED CONFIGURATION ===\n\n";
 }
 
 ###############################################################################
