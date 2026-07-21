@@ -1,0 +1,142 @@
+# =============================================================================
+# mariadb_default.cnf - MariaDB Reference/Documentation Configuration
+#
+# Created: July 2026
+#
+# PURPOSE:
+#     Minimal-necessary starting point, documenting every setting also tuned
+#     by mariadb_cache.cnf / mariadb_simple_2gbp.cnf / mariadb_tidesdb*.cnf.
+#     Every line below is commented out and carries the upstream MariaDB
+#     default value plus a link to the reference documentation, so a reviewer
+#     can see at a glance what changes each of the other profiles makes
+#     relative to a stock server -- instead of having to look each one up.
+#     Mirrors database_config_files/postgresql/postgresql_default.conf so the
+#     two engines have a directly comparable "everything stock" baseline.
+#
+# TARGET VERSION:
+#     MariaDB 12.2.2 -- pinned by taf_run.sh's MARIADB_TARBALL_NAME
+#     (mariadb-12.2.2-linux-systemd-x86_64.tar.gz). Default values below are
+#     for this version's documentation set (https://mariadb.com/kb/en/); a few
+#     defaults changed in recent MariaDB releases relative to older MySQL-era
+#     assumptions -- e.g. character_set_server moved from latin1 to utf8mb4
+#     (10.6+), sync_binlog moved from 0 to 1 (10.5+), and innodb_log_file_size
+#     was superseded by innodb_redo_log_capacity (10.8+). Verify against the
+#     KB page for any setting before assuming an older MySQL/MariaDB default
+#     still applies.
+#
+# USAGE:
+#     Point taf.db_config_file at this file for a plain, stock-defaults
+#     MariaDB run -- i.e. the same role postgresql_default.conf plays for
+#     sysbench_lua_pgsql.properties. It contributes NO active settings of its
+#     own (every line below is commented); the only non-stock values a
+#     benchmark run gets are the ones TAF forces regardless of db_config_file
+#     (see NOTES below).
+#     To run one of the tuned profiles instead, point taf.db_config_file at
+#     mariadb_cache.cnf / mariadb_simple_2gbp.cnf / mariadb_tidesdb*.cnf.
+#     Diff this file against those to see exactly what each one overrides and
+#     by how much relative to a stock server.
+#
+# NOTES:
+#     - datadir, socket, log-error, and pid-file are always forced by TAF as
+#       explicit mariadbd CLI flags after --defaults-file=<this file>
+#       (mariadb.pm::_db_start_runtime_server); MariaDB's own CLI-over-config
+#       precedence means any datadir/socket/log-error/pid-file line in this
+#       file would be silently ignored, not merely overridden -- do not set
+#       them here.
+#     - port is NOT forced by TAF (unlike PostgreSQL's port/listen_addresses,
+#       which postgres.pm always strips and re-forces). Left unset here, the
+#       server uses the MariaDB compiled-in default (3306). Set it explicitly
+#       in this file if a run needs a non-default port.
+#     - bind-address is left unset (MariaDB default: listen on all
+#       interfaces), since none of the sibling profiles set it either.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# "Mandatory" parameters -- i.e. ones without which the server would not
+# start, or would start in a way unusable for a benchmark run.
+#
+# In practice, MariaDB has NO my.cnf setting that lacks a built-in default --
+# mariadbd starts fine with an empty [mysqld] section, using its compiled-in
+# boot values throughout. Nothing below is a case of "no default exists"; the
+# only two params in this category are handled outside this file entirely:
+#
+#   - datadir  -- forced by TAF via --datadir=, not here.
+#   - socket   -- forced by TAF via --socket=, not here.
+#
+# No other setting in this file is "required" in the no-default sense the
+# question implies. If you want to designate one of the tunables below as
+# mandatory-with-no-safe-default for a *new* profile (e.g. innodb_buffer_pool_size
+# sized to a specific host's RAM, so the compiled-in 128MB would be wrong for
+# a benchmark), leave a TODO here and decide the value per-host:
+#
+#   TODO(you): any profile-specific "must be set explicitly" parameter goes here.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Memory
+# Reference: https://mariadb.com/kb/en/innodb-system-variables/
+# Reference: https://mariadb.com/kb/en/server-system-variables/
+# ---------------------------------------------------------------------------
+#innodb_buffer_pool_size        = 128M    # MariaDB default
+#innodb_buffer_pool_instances   = 1       # MariaDB default when innodb_buffer_pool_size < 1GB; auto-scales up to 8 above that, capped at innodb_buffer_pool_size/1GB
+#key_buffer_size                = 128M    # MariaDB default (MyISAM/Aria key cache; largely unused with InnoDB as default engine)
+#sort_buffer_size               = 2M      # MariaDB default (per-connection)
+#join_buffer_size               = 256K    # MariaDB default (per-connection)
+#tmp_table_size                 = 16M     # MariaDB default
+#max_heap_table_size            = 16M     # MariaDB default
+
+# ---------------------------------------------------------------------------
+# InnoDB Durability / Redo Log
+# Reference: https://mariadb.com/kb/en/innodb-system-variables/
+# Reference: https://mariadb.com/kb/en/replication-and-binary-log-system-variables/
+# ---------------------------------------------------------------------------
+#innodb_flush_log_at_trx_commit = 1       # MariaDB default (full ACID durability)
+#innodb_redo_log_capacity       = 100M    # MariaDB default (10.8+; supersedes innodb_log_file_size/innodb_log_files_in_group)
+#innodb_doublewrite             = ON      # MariaDB default
+#innodb_flush_method            = fsync   # MariaDB default (O_DIRECT is NOT the stock default, unlike some tuned profiles here)
+#sync_binlog                    = 1       # MariaDB default (CHANGED from 0 in MariaDB 10.5+; log-bin itself is off by default on a standalone, non-replica server)
+#log_bin                        = OFF     # MariaDB default (binlog disabled unless server_id + log-bin configured)
+
+# ---------------------------------------------------------------------------
+# I/O
+# Reference: https://mariadb.com/kb/en/innodb-system-variables/
+# ---------------------------------------------------------------------------
+#innodb_io_capacity             = 200     # MariaDB default
+#innodb_io_capacity_max         = 2000    # MariaDB default (auto = 2 * innodb_io_capacity if unset)
+#innodb_read_io_threads         = 4       # MariaDB default
+#innodb_write_io_threads        = 4       # MariaDB default
+#innodb_file_per_table          = ON      # MariaDB default
+
+# ---------------------------------------------------------------------------
+# Connections / Caching
+# Reference: https://mariadb.com/kb/en/server-system-variables/
+# ---------------------------------------------------------------------------
+#max_connections                = 151     # MariaDB default
+#table_open_cache               = 2000    # MariaDB default
+#thread_cache_size              = -1      # MariaDB default: autosized from max_connections (roughly max_connections/100, min 0) unless explicitly set
+#thread_handling                = one-thread-per-connection  # MariaDB default (thread pool is opt-in, not the stock mode)
+#open_files_limit               = 0       # MariaDB default (0 = use the OS/ulimit-derived value; not an explicit cap)
+
+# ---------------------------------------------------------------------------
+# Optimizer
+# Reference: https://mariadb.com/kb/en/server-system-variables/#optimizer_switch
+# ---------------------------------------------------------------------------
+#optimizer_switch               = <version-default flag set>  # MariaDB default; see KB page -- too many individual flags to usefully enumerate as a single value here
+#innodb_stats_on_metadata       = OFF     # MariaDB default (CHANGED from ON in older MySQL-derived defaults)
+#innodb_autoinc_lock_mode       = 2       # MariaDB default (interleaved)
+
+# ---------------------------------------------------------------------------
+# Logging
+# Reference: https://mariadb.com/kb/en/server-system-variables/
+# ---------------------------------------------------------------------------
+#general_log                    = OFF     # MariaDB default
+#slow_query_log                 = OFF     # MariaDB default
+#log_error                      = <unset> # forced by TAF via --log-error=, not here
+#performance_schema              = OFF     # MariaDB default (unlike MySQL/Percona, where it is ON by default)
+
+# ---------------------------------------------------------------------------
+# Character Set / Collation
+# Reference: https://mariadb.com/kb/en/server-system-variables/
+# ---------------------------------------------------------------------------
+#character_set_server           = utf8mb4              # MariaDB default (CHANGED from latin1 in MariaDB 10.6+)
+#collation_server               = utf8mb4_uca1400_ai_ci # MariaDB default (CHANGED in MariaDB 10.10+; verify against the KB page for 12.2 specifically before relying on this exact name)
