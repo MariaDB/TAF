@@ -2616,6 +2616,30 @@ sub _spawn_background {
     my $logdir = File::Spec->catpath($vol, $dir, '');
     File::Path::make_path($logdir) unless -d $logdir;
 
+    # When running as root, pre-create and chown the pidfile to the target OS
+    # user *before* forking. mariadbd itself opens/writes its own --pid-file=
+    # path internally, after runuser (via _os_prefix()) has already dropped
+    # it to that user -- but this same $pidfile path is also written by this
+    # very function's parent below (`open $fh, '>', $pidfile`), which never
+    # drops privileges and stays root. Whichever of the two creates the file
+    # first ends up owning it; if root creates it first (observed in
+    # practice), mariadbd's own later write fails with "Can't create/write
+    # to file ... Permission denied" and the server dies. Pre-creating it
+    # with the right ownership up front means both writers just open an
+    # *existing* file (which doesn't change ownership) instead of racing to
+    # create it, regardless of which one gets there first.
+    if ($self->{is_root} && defined $self->{os_uid}) {
+        unless (-e $pidfile) {
+            if (open(my $fh, '>', $pidfile)) {
+                close $fh;
+            } else {
+                PrintWarning($_tag."could not pre-create pidfile $pidfile: $!");
+            }
+        }
+        chown($self->{os_uid}, $self->{os_gid}, $pidfile)
+            or PrintWarning($_tag."chown $pidfile to $self->{os_user} failed: $!");
+    }
+
     # fork the daemon
     my $pid = fork();
     if (!defined $pid) {
