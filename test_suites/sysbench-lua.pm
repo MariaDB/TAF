@@ -2592,8 +2592,22 @@ sub SetConnectionArgs {
     # Connection parameters — branched by driver family
     if ($tsOpt{db_driver} eq 'pgsql') {
 
-        # PostgreSQL uses --pgsql-* flags; always connect via loopback (pg_hba.conf allows 127.0.0.1)
-        $args .= " --pgsql-host='127.0.0.1'";
+        # PostgreSQL uses --pgsql-* flags. drv_pgsql.c passes --pgsql-host
+        # straight into PQsetdbLogin(), and libpq treats a value starting
+        # with '/' as a unix-socket directory rather than a hostname (unlike
+        # libmysqlclient below, "localhost" here would still mean TCP) -- so
+        # unix-socket use has to be requested with an explicit path, not by
+        # omitting the flag. pg_hba.conf already allows this ("local all all
+        # md5", see postgres.pm::_db_write_pg_hba_conf), and TAF's own
+        # taf_run_pgsql.sh already assumes /var/run/postgresql is writable
+        # for the server's socket, so reuse the same path here. The port is
+        # still required even for a socket connection: libpq derives the
+        # socket filename (.s.PGSQL.<port>) from host dir + port.
+        if ($options{db_clients_use_unix_socket}) {
+            $args .= " --pgsql-host='" . ($options{db_socket} || '/var/run/postgresql') . "'";
+        } else {
+            $args .= " --pgsql-host='127.0.0.1'";
+        }
         $args .= " --pgsql-port=" . $options{db_port};
         $args .= " --pgsql-user='" . $options{db_user} . "'";
         $args .= " --pgsql-password='" . $options{db_user_pass} . "'";
