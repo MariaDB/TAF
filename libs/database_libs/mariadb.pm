@@ -316,7 +316,59 @@ sub new {
     # Runtime pidfile now lives under runtime_dir
     $self->{pidfile} = File::Spec->catfile($runtime_dir, "mariadb_runtime.pid");
 
+    # When TAF runs as root, mariadbd/mariadb-install-db must run as a
+    # non-root OS user -- mariadbd refuses to start as root outright (unlike
+    # postgres, which just needs its server process to not be root; MariaDB's
+    # check is unconditional and has no --allow-run-as-root style override).
+    # Unlike PostgreSQL's package install (which creates a 'postgres' system
+    # user via RPM postinstall scriptlet), this plugin targets a plain tarball
+    # install with no such user created automatically -- create one if it
+    # doesn't already exist, rather than only detecting a pre-existing one
+    # like postgres.pm does.
+    $self->{is_root} = ($> == 0) ? 1 : 0;
+    if ($self->{is_root}) {
+        my @pw = getpwnam('mysql');
+        unless (@pw) {
+            PrintVerbose("$_me::new - running as root and OS user 'mysql' does not exist; creating it");
+            system('useradd', '--system', '--no-create-home', '--shell', '/sbin/nologin', 'mysql');
+            if ($? != 0) {
+                PrintWarning("$_me::new - useradd mysql failed (exit " . ($? >> 8) . ")");
+            }
+            @pw = getpwnam('mysql');
+        }
+        if (@pw) {
+            $self->{os_user} = 'mysql';
+            $self->{os_uid}  = $pw[2];
+            $self->{os_gid}  = $pw[3];
+            PrintVerbose("$_me::new - running as root; server operations will use OS user 'mysql' (uid=$pw[2])");
+        } else {
+            PrintWarning("$_me::new - running as root but OS user 'mysql' not found/creatable; mariadbd will refuse to start");
+            $self->{os_user} = undef;
+            $self->{os_uid}  = undef;
+            $self->{os_gid}  = undef;
+        }
+    }
+
     return $self;
+}
+
+################################################################################
+# _os_prefix
+#
+# PURPOSE:
+#     Return the command prefix needed to run a command as the 'mysql' OS user
+#     when TAF is executing as root. Returns an empty list when not root or
+#     when the 'mysql' OS user could not be resolved/created. Mirrors
+#     postgres.pm's _os_prefix() so both engine plugins handle a root-executed
+#     TAF the same way.
+#
+# USAGE:
+#     my @cmd = ($self->_os_prefix(), $binary, @args);
+################################################################################
+sub _os_prefix {
+    my ($self) = @_;
+    return () unless $self->{is_root} && $self->{os_user};
+    return ('runuser', '-u', $self->{os_user}, '--');
 }
 
 ################################################################################
@@ -512,6 +564,7 @@ sub db_start {
 
     # Build argv list for exec()
     my @cmd = (
+        $self->_os_prefix(),
         $server,
         "--defaults-file=$self->{config}",
         "--datadir=$data_dir",
@@ -1854,6 +1907,20 @@ sub _db_prepare_data_dir {
         return ERROR;
     };
 
+    # When running as root, hand ownership to the mysql OS user so
+    # mariadb-install-db and mariadbd (both run via _os_prefix() as 'mysql')
+    # can read and write the data directory. Also chown tmpdir, since the
+    # socket, pidfile, and log-error paths mariadbd opens itself all live
+    # there (Utilities.pm defaults db_socket to "<tmp_dir>db.sock").
+    if ($self->{is_root} && defined $self->{os_uid}) {
+        chown($self->{os_uid}, $self->{os_gid}, $dir)
+            or PrintWarning("_db_prepare_data_dir: chown $dir to $self->{os_user} failed: $!");
+        if ($self->{tmpdir} && -d $self->{tmpdir}) {
+            chown($self->{os_uid}, $self->{os_gid}, $self->{tmpdir})
+                or PrintWarning("_db_prepare_data_dir: chown tmpdir failed: $!");
+        }
+    }
+
     return OK;
 }
 
@@ -2197,6 +2264,7 @@ sub _db_run_install_db {
     # Build the install-db command line.
     # NOTE: No embedded quotes. _run_command handles argument quoting safely.
     my @cmd = (
+        $self->_os_prefix(),
         $install_db,
         "--no-defaults",
         "--basedir=$self->{install_root}",
@@ -2356,6 +2424,7 @@ sub _db_start_bootstrap {
 
     # Build argv list for exec()
     my @cmd = (
+        $self->_os_prefix(),
         $server,
         "--no-defaults",
         "--datadir=$datadir",
