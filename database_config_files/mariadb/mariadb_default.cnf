@@ -51,6 +51,12 @@
 #       interfaces), since none of the sibling profiles set it either.
 # =============================================================================
 
+# A section header is required even though every setting below it is
+# commented out -- MariaDB's config parser rejects a file with no [section]
+# headers at all ("Config file contains no section headers"), unlike
+# PostgreSQL's postgresql.conf format (which has no sections).
+[mysqld]
+
 # ---------------------------------------------------------------------------
 # "Mandatory" parameters -- i.e. ones without which the server would not
 # start, or would start in a way unusable for a benchmark run.
