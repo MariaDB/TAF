@@ -1916,8 +1916,16 @@ sub _db_prepare_data_dir {
         chown($self->{os_uid}, $self->{os_gid}, $dir)
             or PrintWarning("_db_prepare_data_dir: chown $dir to $self->{os_user} failed: $!");
         if ($self->{tmpdir} && -d $self->{tmpdir}) {
-            chown($self->{os_uid}, $self->{os_gid}, $self->{tmpdir})
-                or PrintWarning("_db_prepare_data_dir: chown tmpdir failed: $!");
+            # Recursive, not just the directory itself: unlike data_dir (wiped
+            # and recreated from scratch above), tmpdir persists across
+            # attempts, so a prior run's bootstrap/runtime pidfile or log
+            # (created before this fix existed, or by a run that failed
+            # before reaching this chown) can already exist there owned by
+            # root -- a non-recursive chown leaves those files unwritable by
+            # 'mysql', and mariadbd fails outright when it can't create/write
+            # its own --pid-file.
+            system('chown', '-R', "$self->{os_uid}:$self->{os_gid}", $self->{tmpdir}) == 0
+                or PrintWarning("_db_prepare_data_dir: recursive chown of tmpdir failed (exit " . ($? >> 8) . ")");
         }
     }
 
