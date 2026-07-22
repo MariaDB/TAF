@@ -3,7 +3,8 @@
 # ResultsCompareRaw.pl
 #
 # Created: 2025
-# Last Modified: 2026
+# Last Modified: July 2026
+# Version 2.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -55,6 +56,9 @@
 #     - All failures must be explicit; unreadable or malformed inputs must
 #       terminate execution.
 #
+# OPTIONS:
+#      - metric-name allows graph to graph additional data points
+#
 # GUARANTEES:
 #     - Dataset ordering is preserved and tags are deterministic.
 #     - Combined results are contributor-proof and ready for the reporter.
@@ -75,6 +79,13 @@ use lib '../libs';
 
 use File::Spec;
 use reporter_libs::chart_and_test_info_results_tables_html qw(GenerateResults);
+
+use Getopt::Long;
+
+my $metric_name;
+GetOptions(
+    "metric-name=s" => \$metric_name,
+);
 
 die "Usage: $0 file1.raw.txt file2.raw.txt ... output_dir [basename]\n"
     if @ARGV < 3;
@@ -201,15 +212,19 @@ for my $file (@input_files) {
     $dataset_index++;
 
     foreach my $r (@$results) {
-        # Preserve any existing user_id/user_label, but allow override
-        $r->{user_id} ||= $tag;
+    $r->{user_id} ||= $tag;
+    $r->{metadata} ||= {};
 
-        # Ensure metadata hashref exists
-        $r->{metadata} ||= {};
-
-        # Optionally, we could stamp a dataset label into metadata
-        # for downstream plugins if desired:
-        # $r->{metadata}{dataset_label} = $tag;
+        # If user specified --metric-name, force that metric to be primary
+        if ($metric_name && $r->{metrics}) {
+            foreach my $m (@{ $r->{metrics} }) {
+                if ($m->{name} eq $metric_name) {
+                    $m->{type} = 'primary';
+                } else {
+                    $m->{type} = 'additional';
+                }
+            }
+        }
     }
 
     push @combined, @$results;
