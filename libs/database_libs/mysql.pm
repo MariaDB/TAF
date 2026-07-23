@@ -3,9 +3,9 @@ package mysql;
 # mysql.pm - MySQL Database Plugin for TAF
 #
 # Created:       December 2025
-# Last Modified: June 2026
+# Last Modified: July 2026
 #
-# Version: 3.0
+# Version: 3.1
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -432,7 +432,7 @@ sub db_init {
     
     # Apply users + permissions
     return ERROR if $self->_db_setup_users() != OK;
-    
+   
     # Stop bootstrap server
     return ERROR if $self->_db_stop_bootstrap() != OK;
 
@@ -607,6 +607,16 @@ sub db_start {
     } else {
         PrintVerbose($_st."mysqld pidfile not found after start: $pidfile");
     }
+
+    # Dump SHOW VARIABLES after user setup (bootstrap server still running)
+    my $client = $self->{mysql_bin};
+    my $vars_file = File::Spec->catfile($self->{runtime_dir}, "mysql_variables_after_setup.txt");
+    
+    my $dump_cmd = "$client --socket=$self->{socket} -u root -p\"$self->{db_root_pass}\" -e \"SHOW VARIABLES\" > $vars_file 2>&1";
+    
+    system($dump_cmd) == 0
+        ? PrintVerbose("Dumped SHOW VARIABLES to $vars_file")
+        : PrintError("Failed to dump SHOW VARIABLES to $vars_file");
 
     $self->{started} = TRUE;
     StageEnd($_st);

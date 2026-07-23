@@ -5,7 +5,7 @@ package mariadb;
 # Created:       January 2026
 # Last Modified: July 2026
 #
-# Vesion: 3.1
+# Vesion: 3.2
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -236,6 +236,7 @@ sub new {
 
         # Extras
         extra_args     => $args{db_extra_args},
+        init_mode      => 0,
 
         # Permission flags
         users_created        => FALSE,
@@ -413,11 +414,13 @@ sub db_init {
     return ERROR if $self->_db_stop_bootstrap() != OK;
     
     # Start real runtime server (normal grant tables)
+    $self->{init_mode} = 1;
     return ERROR if $self->db_start() != OK;
+    $self->{init_mode} = 0;
     
     # Now apply full grants (ALTER USER, GRANT, tester user, etc.)
     return ERROR if $self->_db_setup_users() != OK;
-    
+   
     # Stop runtime server
     return ERROR if $self->db_stop() != OK;
     
@@ -576,6 +579,18 @@ sub db_start {
     } else {
         PrintError($_st."PID file not found after successful startup: $pidfile");
         return ERROR;
+    }
+
+    # Dump SHOW VARIABLES after user setup
+    if (!$self->{init_mode}) {
+        my $client = $self->{mariadb_bin};
+        my $vars_file = File::Spec->catfile($self->{runtime_dir}, "mariadb_variables_after_setup.txt");
+    
+        my $dump_cmd = "$client --socket=$self->{socket} -u root -p\"$self->{db_root_pass}\" -e \"SHOW VARIABLES\" > $vars_file 2>&1";
+    
+        system($dump_cmd) == 0
+            ? PrintVerbose("Dumped SHOW VARIABLES to $vars_file")
+            : PrintError("Failed to dump SHOW VARIABLES to $vars_file");
     }
 
     StageEnd($_st);
