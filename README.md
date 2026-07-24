@@ -1,8 +1,10 @@
 # TAF-Perl (Test Automation Framework - Perl)
 
-TAF-Perl is a deterministic, extensible test automation framework written in Perl. It provides a stable foundation for building client-to-backend test suites, benchmarking workloads, and system validation tools. The framework emphasizes clarity, reproducibility, and contributor-proof behavior.
+TAF-Perl is a deterministic, extensible test automation framework written in Perl that provides clean, repeatable lifecycle control for database benchmarking.
 
 TAF-Perl is maintained under the MariaDB Foundation as part of its mission to support open, vendor-neutral, community-driven tooling for the database ecosystem. The framework supports MariaDB, MySQL, and any other database maker for which a TAF database plugin, SQL dialect, and compatible test client exist.
+
+TAF-Perl provides a stable foundation for building client-to-backend test suites, benchmarking workloads, and system validation tools. The framework emphasizes clarity, reproducibility, and contributor-proof behavior.
 
 For remote testing, only the SQL dialect, test client, and a reachable database installation are required.
 
@@ -125,9 +127,6 @@ taf-perl/
     hammerdb-tproch.pm
     sysbench-lua.pm
     test_suite_template.pm
-
-  tidesdb_data/
-    (schema and table data for tidesdb workloads)
 
   tmp/
     (temporary working files)
