@@ -92,6 +92,7 @@ our $ctx               = undef;
 #-----------------------------------------------------------------------------
 
 use Cwd;
+use File::Basename qw(dirname);
 use threads;
 use constant IS_WINDOWS => ($^O =~ /^(mswin)/oi);
 use FindBin qw($Bin);
@@ -2594,17 +2595,24 @@ sub SetConnectionArgs {
 
         # PostgreSQL uses --pgsql-* flags. drv_pgsql.c passes --pgsql-host
         # straight into PQsetdbLogin(), and libpq treats a value starting
-        # with '/' as a unix-socket directory rather than a hostname (unlike
-        # libmysqlclient below, "localhost" here would still mean TCP) -- so
-        # unix-socket use has to be requested with an explicit path, not by
-        # omitting the flag. pg_hba.conf already allows this ("local all all
-        # md5", see postgres.pm::_db_write_pg_hba_conf), and TAF's own
-        # taf_run_pgsql.sh already assumes /var/run/postgresql is writable
-        # for the server's socket, so reuse the same path here. The port is
-        # still required even for a socket connection: libpq derives the
-        # socket filename (.s.PGSQL.<port>) from host dir + port.
+        # with '/' as a unix-socket DIRECTORY rather than a hostname (unlike
+        # libmysqlclient below, "localhost" here would still mean TCP) --
+        # libpq then derives the actual socket filename (.s.PGSQL.<port>)
+        # by joining that directory with the port. $options{db_socket} is a
+        # single FILE-shaped path (Utilities.pm defaults it to
+        # "<tmp_dir>db.sock", matching MariaDB's single-socket-file
+        # convention), not a directory -- passing it straight through here
+        # made libpq look for ".../tmp/db.sock/.s.PGSQL.<port>", which never
+        # exists. Use its directory instead: postgres.pm configures
+        # postgresql.conf's unix_socket_directories to that same tmpdir
+        # (see _db_apply_postgresql_conf), so this is where the server
+        # actually creates its socket. pg_hba.conf already allows the
+        # connection ("local all all md5", see
+        # postgres.pm::_db_write_pg_hba_conf). The port is still required
+        # even for a socket connection: libpq needs it to build the
+        # ".s.PGSQL.<port>" filename.
         if ($options{db_clients_use_unix_socket}) {
-            $args .= " --pgsql-host='" . ($options{db_socket} || '/var/run/postgresql') . "'";
+            $args .= " --pgsql-host='" . dirname($options{db_socket} || '/var/run/postgresql') . "'";
         } else {
             $args .= " --pgsql-host='127.0.0.1'";
         }
@@ -2686,13 +2694,9 @@ sub SetConnectionArgs {
         }
 
         $args .= " --thread-init-timeout=" . $tsOpt{thread_init_timeout};
-<<<<<<< variant A
-        $args .= " --mysql-ssl=" .$tsOpt{bmk_mysql_ssl} if defined $tsOpt{bmk_mysql_ssl};
->>>>>>> variant B
         # BMK mysql-ssl flag applies to MySQL/MariaDB only
         $args .= " --mysql-ssl=" .$tsOpt{bmk_mysql_ssl}
             if defined $tsOpt{bmk_mysql_ssl} && $tsOpt{db_driver} ne 'pgsql';
-======= end
 
         $args .= " --sync-file='" . $tsOpt{bmk_sync_file} . "'" if defined $tsOpt{bmk_sync_file};
         $args .= " --sync-wait=" . $tsOpt{bmk_sync_file_wait_timeout_ms} if defined $tsOpt{bmk_sync_file_wait_timeout_ms};

@@ -387,10 +387,17 @@ step "Sysbench"
 SYSBENCH_SRC="${TAF_DIR}/client_source/sysbench-lua"
 
 # Correct state: sysbench is a symlink to src/sysbench (locally built binary)
+# *with pgsql support* -- a binary that already exists but was built for a
+# different engine (e.g. taf_run.sh's own build_sysbench_mariadb(), which
+# builds --with-mysql --without-pgsql into this same client_source/sysbench-lua/
+# tree when MariaDB ran on this host first) must not be trusted as-is, or
+# the pgsql prepare/run step fails immediately with "invalid option:
+# --pgsql-host=...". Confirm the pgsql driver is actually compiled in.
 SYSBENCH_OK=0
-if [[ -L "${SYSBENCH_SRC}/sysbench" ]] && [[ "$(readlink "${SYSBENCH_SRC}/sysbench")" == "src/sysbench" ]] && [[ -x "${SYSBENCH_SRC}/src/sysbench" ]]; then
+if [[ -L "${SYSBENCH_SRC}/sysbench" ]] && [[ "$(readlink "${SYSBENCH_SRC}/sysbench")" == "src/sysbench" ]] && [[ -x "${SYSBENCH_SRC}/src/sysbench" ]] \
+   && "${SYSBENCH_SRC}/sysbench" "${SYSBENCH_SRC}/src/lua/oltp_read_write.lua" --help 2>&1 | grep -qE '^pgsql\b'; then
     SYSBENCH_OK=1
-    info "Sysbench already built: $("${SYSBENCH_SRC}/sysbench" --version)"
+    info "Sysbench already built with pgsql driver: $("${SYSBENCH_SRC}/sysbench" --version)"
 elif [[ -x "${SYSBENCH_SRC}/sysbench" ]] && [[ ! -L "${SYSBENCH_SRC}/sysbench" ]]; then
     warn "sysbench is a binary (not a symlink) — may have been rsync'd from another host"
     warn "Rebuilding from source for correct architecture and libpq..."

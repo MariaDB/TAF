@@ -187,14 +187,14 @@ sub new {
 
     # Validate tmpdir early — it is required throughout the lifecycle
     unless ($self->{tmpdir} && -d $self->{tmpdir}) {
-        PrintError("$_me::new - tmpdir is missing or not a directory: " .
+        PrintError("${_me}::new - tmpdir is missing or not a directory: " .
                    ($self->{tmpdir} // "<undef>"));
         return undef;
     }
 
     # Validate install_root
     unless ($self->{install_root} && -d $self->{install_root}) {
-        PrintError("$_me::new - install_root is missing or not a directory: " .
+        PrintError("${_me}::new - install_root is missing or not a directory: " .
                    ($self->{install_root} // "<undef>"));
         return undef;
     }
@@ -209,7 +209,7 @@ sub new {
     # Validate required binaries
     for my $b (qw(postgres_bin pg_ctl_bin psql_bin initdb_bin pg_isready_bin)) {
         unless ($self->{$b} && -x $self->{$b}) {
-            PrintError("$_me::new - Required binary '$b' not found under " .
+            PrintError("${_me}::new - Required binary '$b' not found under " .
                        $self->{install_root});
             return undef;
         }
@@ -228,18 +228,18 @@ sub new {
             $self->{os_user}  = 'postgres';
             $self->{os_uid}   = $pw[2];
             $self->{os_gid}   = $pw[3];
-            PrintVerbose("$_me::new - running as root; cluster operations will use OS user 'postgres' (uid=$pw[2])");
+            PrintVerbose("${_me}::new - running as root; cluster operations will use OS user 'postgres' (uid=$pw[2])");
 
             # If data_dir or tmpdir are under /root (not accessible to postgres),
             # redirect them to /tmp where the postgres user can traverse.
             my $pg_base = "/tmp/taf_pg_$$";
             if ($self->{data_dir} && $self->{data_dir} =~ m{^/root(/|$)}) {
                 $self->{data_dir} = "$pg_base/data";
-                PrintVerbose("$_me::new - data_dir relocated to $self->{data_dir} (root path inaccessible to postgres)");
+                PrintVerbose("${_me}::new - data_dir relocated to $self->{data_dir} (root path inaccessible to postgres)");
             }
             if ($self->{tmpdir} && $self->{tmpdir} =~ m{^/root(/|$)}) {
                 $self->{tmpdir} = "$pg_base/tmp";
-                PrintVerbose("$_me::new - tmpdir relocated to $self->{tmpdir} (root path inaccessible to postgres)");
+                PrintVerbose("${_me}::new - tmpdir relocated to $self->{tmpdir} (root path inaccessible to postgres)");
                 # Ensure log paths are updated
                 $self->{log_init}  = File::Spec->catfile($self->{tmpdir}, "postgresql_initdb.log");
                 $self->{log_start} = File::Spec->catfile($self->{tmpdir}, "postgresql_start.log");
@@ -248,12 +248,12 @@ sub new {
             # Create and chown the pg_base dirs so postgres can write into them
             if ($self->{data_dir} =~ m{^\Q$pg_base\E} || $self->{tmpdir} =~ m{^\Q$pg_base\E}) {
                 File::Path::make_path("$pg_base/data", "$pg_base/tmp")
-                    or PrintWarning("$_me::new - could not pre-create $pg_base dirs");
+                    or PrintWarning("${_me}::new - could not pre-create $pg_base dirs");
                 chown($pw[2], $pw[3], $pg_base, "$pg_base/data", "$pg_base/tmp");
                 chmod(0700, $pg_base, "$pg_base/data", "$pg_base/tmp");
             }
         } else {
-            PrintWarning("$_me::new - running as root but OS user 'postgres' not found; initdb may fail");
+            PrintWarning("${_me}::new - running as root but OS user 'postgres' not found; initdb may fail");
             $self->{os_user}  = undef;
             $self->{os_uid}   = undef;
             $self->{os_gid}   = undef;
@@ -515,7 +515,7 @@ sub db_pid {
 
     my $pid = $self->{db_pid};
     unless (defined $pid && $pid =~ /^\d+$/) {
-        PrintError("$_me::db_pid - PID not set or invalid");
+        PrintError("${_me}::db_pid - PID not set or invalid");
         return undef;
     }
     return $pid;
@@ -801,6 +801,14 @@ sub _db_apply_postgresql_conf {
         print $fh "port = $self->{port}\n";
         print $fh "listen_addresses = '*'\n";
 
+        # Unix socket lives in TAF's own tmpdir, not PG's stock default
+        # (/tmp) -- this is the same directory sysbench-lua.pm's
+        # SetConnectionArgs() derives (via dirname($options{db_socket}))
+        # when db_clients_use_unix_socket is set, so the two must agree.
+        my $socket_dir = $self->{tmpdir};
+        $socket_dir =~ s{/+$}{};
+        print $fh "unix_socket_directories = '$socket_dir'\n";
+
         # SSL settings
         my $ssl_mode = lc($self->{ssl_mode} // 'off');
         if ($ssl_mode ne 'off') {
@@ -817,8 +825,8 @@ sub _db_apply_postgresql_conf {
             print $fh "\n# === User-supplied TAF config ===\n";
             if (open(my $ufh, '<', $self->{config})) {
                 while (my $line = <$ufh>) {
-                    # Skip port/listen/ssl — already written above
-                    next if $line =~ /^\s*(port|listen_addresses|ssl)\s*=/i;
+                    # Skip port/listen/ssl/socket-dir — already written above
+                    next if $line =~ /^\s*(port|listen_addresses|ssl|unix_socket_directories)\s*=/i;
                     print $fh $line;
                 }
                 close $ufh;
@@ -1009,7 +1017,7 @@ sub _detect_pg_version {
     $self->{server_version_raw}  = $output;
     $self->{server_version_norm} = $version;
 
-    PrintVerbose("$_me::_detect_pg_version: $version");
+    PrintVerbose("${_me}::_detect_pg_version: $version");
     return $version;
 }
 
@@ -1126,7 +1134,7 @@ sub _find_binary {
 ################################################################################
 sub _run_command {
     my ($self, $cmd_ref, $tag, $logfile) = @_;
-    my $_tag = "$_me::_run_command($tag): ";
+    my $_tag = "${_me}::_run_command($tag): ";
 
     my $cmd_str = join(' ', @$cmd_ref);
 

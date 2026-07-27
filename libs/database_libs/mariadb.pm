@@ -329,10 +329,10 @@ sub new {
     if ($self->{is_root}) {
         my @pw = getpwnam('mysql');
         unless (@pw) {
-            PrintVerbose("$_me::new - running as root and OS user 'mysql' does not exist; creating it");
+            PrintVerbose("${_me}::new - running as root and OS user 'mysql' does not exist; creating it");
             system('useradd', '--system', '--no-create-home', '--shell', '/sbin/nologin', 'mysql');
             if ($? != 0) {
-                PrintWarning("$_me::new - useradd mysql failed (exit " . ($? >> 8) . ")");
+                PrintWarning("${_me}::new - useradd mysql failed (exit " . ($? >> 8) . ")");
             }
             @pw = getpwnam('mysql');
         }
@@ -340,9 +340,9 @@ sub new {
             $self->{os_user} = 'mysql';
             $self->{os_uid}  = $pw[2];
             $self->{os_gid}  = $pw[3];
-            PrintVerbose("$_me::new - running as root; server operations will use OS user 'mysql' (uid=$pw[2])");
+            PrintVerbose("${_me}::new - running as root; server operations will use OS user 'mysql' (uid=$pw[2])");
         } else {
-            PrintWarning("$_me::new - running as root but OS user 'mysql' not found/creatable; mariadbd will refuse to start");
+            PrintWarning("${_me}::new - running as root but OS user 'mysql' not found/creatable; mariadbd will refuse to start");
             $self->{os_user} = undef;
             $self->{os_uid}  = undef;
             $self->{os_gid}  = undef;
