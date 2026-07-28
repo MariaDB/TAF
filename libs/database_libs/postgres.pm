@@ -2,7 +2,7 @@ package postgres;
 ###############################################################################
 # postgres.pm - PostgreSQL Database Plugin for TAF
 #
-# Created:       June 2026
+# Created:       June 2026 by lukas.oliva@virtuozzo.com using Claude
 # Last Modified: June 2026
 #
 # This program is free software; you can redistribute it and/or modify
