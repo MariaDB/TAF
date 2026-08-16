@@ -4,7 +4,7 @@
 # TAF-MariaDB-Tools Version: 1.0
 #
 #  Last Modified: August 2026
-# 
+#
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2026 MariaDB Foundation and Jonathan "jeb" Miller
 #
@@ -38,7 +38,6 @@
 #     Requires POSIX shell and /proc access.
 #===============================================================================
 
-# --help handler
 if [ "$1" = "--help" ]; then
     echo "Usage: rssLogger.sh <pid> <interval> <logfile>"
     echo ""
@@ -58,23 +57,27 @@ PID="$1"
 INTERVAL="$2"
 LOG="$3"
 
-# ask for pid if missing
 while [ -z "$PID" ]; do
     read -p "Enter pid: " PID
 done
 
-# default interval to 600 seconds if missing
+# resolve process name
+PROCNAME=$(ps -p "$PID" -o comm= 2>/dev/null)
+if [ -z "$PROCNAME" ]; then
+    PROCNAME="unknown"
+fi
+
 if [ -z "$INTERVAL" ]; then
     INTERVAL=600
 fi
 
-# if no log provided, create one in cwd with timestamp
 if [ -z "$LOG" ]; then
     TS=$(date +"%Y%m%d_%H%M%S")
     LOG="rss_${PID}_${TS}.log"
 fi
 
-echo "Logging RSS for pid $PID every ${INTERVAL}s to $LOG"
+echo "Monitoring process: $PROCNAME (PID: $PID)"
+echo "Logging RSS every ${INTERVAL}s to $LOG"
 echo "Press Ctrl-C to exit"
 
 while true; do
@@ -83,7 +86,7 @@ while true; do
     RSS_KB=$(grep VmRSS /proc/$PID/status | awk '{print $2}')
     RSS_MB=$(awk -v kb="$RSS_KB" 'BEGIN {printf "%.2f", kb/1024}')
 
-    echo "$TS pid: $PID RSS: ${RSS_MB} MB" >> "$LOG"
+    echo "$TS pid: $PID ($PROCNAME) RSS: ${RSS_MB} MB" >> "$LOG"
 
     sleep "$INTERVAL"
 done
