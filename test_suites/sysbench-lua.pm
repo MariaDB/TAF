@@ -2,8 +2,8 @@
 # sysbench-lua.pm - Sysbench Lua + BMK Test Suite for TAF
 #
 # Created: September 2025
-# Last Modified: June 2026
-# Version: 1.4
+# Last Modified: August 2026
+# Version: 1.5
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -82,7 +82,7 @@
 ## --------------------------------------------------------------------------
 our $properties_prefix = "sysbench_lua";
 our $ts_version        = 1;
-our $ts_revision       = 4;
+our $ts_revision       = 5;
 our $ts_type           = "benchmark";
 our $client_version    = "Sysbench-1.0";
 our $ctx               = undef;
@@ -351,6 +351,12 @@ sub BuildClient {
         return ERROR;
     }
 
+    PrintVerbose($_bc." BuildClientCheckThirdParty");
+    if (BuildClientCheckThirdParty($build_output,) != OK) {
+        PrintError($_bc." Check thirdpary failed");
+        return ERROR;
+    }
+
     PrintVerbose($_bc." Calling BuildCmake()");
     my $rc = toolsLib::BuildClient($db_install,
                                    $tsOpt{source},
@@ -366,6 +372,81 @@ sub BuildClient {
 
     StageEnd($_bc);
     PrintLine("-",30);
+    return OK;
+}
+
+#-----------------------------------------------------------------------------
+# BuildClientCheckThirdParty
+#
+# Purpose:
+#   Ensure required third-party components (Concurrency Kit and LuaJIT)
+#   are configured and built before running the main client build.
+#
+# Behavior:
+#   - Checks for the presence of ck_md.h to determine whether CK has
+#     already been configured.
+#   - If CK is not configured:
+#       * Runs CK configure.
+#       * Writes CK output to the third-party log.
+#       * Inserts a separator into the log for readability.
+#       * Runs LuaJIT make.
+#       * Writes LuaJIT output to the same log.
+#   - If CK is configured:
+#       * Skips both CK and LuaJIT steps.
+#       * Returns control to the main client build.
+#
+# Parameters:
+#   $build_output
+#       Path to the main client build log. A ".thirdparty.log" file will
+#       be derived from this path to capture CK and LuaJIT output.
+#
+# Returns:
+#   OK     - Third-party components are present or successfully built.
+#   ERROR  - CK configure or LuaJIT make failed.
+#-----------------------------------------------------------------------------
+sub BuildClientCheckThirdParty {
+    my ($build_output) = @_;
+
+    my $_bctp = StageStart($_me." -> BuildClientCheckThirdParty ->");
+    my $ck_md = "$tsOpt{source}/third_party/concurrency_kit/ck/include/ck_md.h";
+
+    # If CK is missing, run BOTH CK configure and LuaJIT make
+    if (! -f $ck_md) {
+
+        my $thirdparty_log = $build_output . ".thirdparty.log";
+
+        PrintVerbose($_bctp."ThirdParty not configured. Running CK configure and LuaJIT make");
+        PrintVerbose($_bctp."ThirdParty configure and make output going to ".$thirdparty_log);
+
+        my $ck_dir = "$tsOpt{source}/third_party/concurrency_kit/ck";
+        my $lj_dir = "$tsOpt{source}/third_party/luajit/luajit/src";
+
+        my $ck_cmd     = "bash -c 'cd \"$ck_dir\" && ./configure >> \"$thirdparty_log\" 2>&1'";
+        my $sep_cmd    = "bash -c 'echo \"================ CK COMPLETE ================\" >> \"$thirdparty_log\"'";
+        my $luajit_cmd = "bash -c 'cd \"$lj_dir\" && make >> \"$thirdparty_log\" 2>&1'";
+
+        PrintVerbose($_bctp."Running configure in ck");
+        if (system($ck_cmd) >> 8) {
+            PrintError($_bctp."CK configure failed");
+            return ERROR;
+        }
+        PrintVerbose($_bctp."Configure in ck complete");
+
+        # Write separator to log
+        system($sep_cmd);
+
+        PrintVerbose($_bctp."Calling LuaJIT make");
+        if (system($luajit_cmd) >> 8) {
+            PrintError($_bctp."LuaJIT make failed");
+            return ERROR;
+        }
+        PrintVerbose($_bctp."LuaJIT make complete");
+
+    } else {
+        PrintVerbose($_bctp."ThirdParty shows configured. Returning to BuildClient");
+    }
+
+    StageEnd($_bctp);
     return OK;
 }
 

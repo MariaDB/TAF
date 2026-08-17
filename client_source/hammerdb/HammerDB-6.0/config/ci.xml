@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ci>
+    <common>
+            <listen_port>5000</listen_port>
+            <clone_cmd>git clone</clone_cmd>
+            <clone_cmd_args>--branch :branch :repo_url .</clone_cmd_args>
+            <commit_msg_cmd>git log -1 --pretty=%B</commit_msg_cmd>
+            <diff_threshold>0.025</diff_threshold>
+            <use_sudo>false</use_sudo>
+            <ci_log_to_temp>1</ci_log_to_temp>
+            <warehouse_limit>4000</warehouse_limit>
+            <root>/opt/hammerdb-ci</root>
+            <tmp>/opt/hammerdb-ci/TMP</tmp>
+    </common>
+    <MariaDB>
+        <build>
+            <repo_url>https://github.com/MariaDB/server.git</repo_url>
+            <ref_regexp>refs/(tags|heads)/(.+)</ref_regexp>
+            <overwrite>false</overwrite>
+            <local_dir_root>/opt/hammerdb-ci/providers/mariadb</local_dir_root>
+            <build_dir>/opt/hammerdb-ci/providers/mariadb/builds</build_dir>
+            <build_cmd>cmake . -DBUILD_CONFIG=mysql_release -DPLUGIN_AUTH_PAM=NO ; cmake --build .</build_cmd>
+            <build_cmd_args>--parallel 8</build_cmd_args>
+            <package_cmd>make package</package_cmd>
+        </build>
+        <install>
+            <install_package>tar -xvf</install_package>
+            <installer>scripts/mariadb-install-db</installer>
+            <install_dir>/opt/hammerdb-ci/providers/mariadb/installs</install_dir>
+            <config_dir>/opt/hammerdb-ci/providers/mariadb/config</config_dir>
+            <defaults_file>/opt/hammerdb-ci/providers/mariadb/config/maria.cnf</defaults_file>
+            <io_config_file>/opt/hammerdb-ci/providers/mariadb/config/mariaio.cnf</io_config_file>
+            <basedir>/opt/hammerdb-ci/providers/mariadb/installs</basedir>
+            <datadir>data</datadir>
+            <innodb_log_group_home_dir>redo</innodb_log_group_home_dir>
+            <innodb_buffer_pool_size>auto</innodb_buffer_pool_size>
+            <init_args>defaults_file basedir datadir innodb_log_group_home_dir</init_args>
+            <start_cmd>bin/mariadbd</start_cmd>
+            <start_args>defaults_file basedir datadir innodb_log_group_home_dir socket port</start_args>
+            <socket>/tmp/mariadb.sock</socket>
+            <port>3306</port>
+            <run_sql_cmd>./bin/mariadb -S {socket} --skip-ssl -vvv -e "{sql}"</run_sql_cmd>
+            <change_password>ALTER USER 'root'@'localhost' IDENTIFIED BY 'maria'</change_password>
+            <shutdown>shutdown</shutdown>
+            <ping>select @@version</ping>
+        </install>
+        <test>
+            <oltp>scripts/tcl/maria/tprocc/maria_tprocc_single.sh</oltp>
+            <olap>scripts/tcl/maria/tproch/maria_tproch_single.sh</olap>
+            <profile>scripts/tcl/maria/tprocc/maria_tprocc_profile.sh</profile>
+            <compare>scripts/tcl/maria/tprocc/maria_tprocc_profile.sh</compare>
+        </test>
+        <pipeline>
+            <single_c>clone build package commit_msg install init run_sql:shutdown start ping run_sql:change_password start_tests:oltp run_sql:shutdown</single_c>
+            <single_h>clone build package commit_msg install init run_sql:shutdown start ping run_sql:change_password start_tests:olap run_sql:shutdown</single_h>
+            <profile>profile</profile>
+            <profileid>1000</profileid>
+            <compare>compare</compare>
+            <compare_profileid>1000</compare_profileid>
+        </pipeline>
+    </MariaDB>
+    <PostgreSQL>
+        <build>
+            <repo_url>https://github.com/postgres/postgres.git</repo_url>
+            <ref_regexp>refs/(tags|heads)/(.+)</ref_regexp>
+            <overwrite>false</overwrite>
+            <local_dir_root>/opt/hammerdb-ci/providers/postgresql</local_dir_root>
+            <build_dir>/opt/hammerdb-ci/providers/postgresql/builds</build_dir>
+            <build_cmd>./configure --without-readline --without-zlib --without-icu ; make</build_cmd>
+            <build_cmd_args>-j 8</build_cmd_args>
+            <package_cmd>true</package_cmd>
+        </build>
+        <install>
+            <install_package>make install</install_package>
+            <installer>bin/initdb</installer>
+            <install_dir>/opt/hammerdb-ci/providers/postgresql/installs</install_dir>
+            <config_dir>/opt/hammerdb-ci/providers/postgresql/config</config_dir>
+            <defaults_file>/opt/hammerdb-ci/providers/postgresql/config/postgresql.conf</defaults_file>
+            <io_config_file>/opt/hammerdb-ci/providers/postgresql/config/postgresqlio.conf</io_config_file>
+            <basedir>/opt/hammerdb-ci/providers/postgresql/installs</basedir>
+            <datadir>data</datadir>
+            <pg_wal_dir>pg_wal</pg_wal_dir>
+            <shared_buffers>auto</shared_buffers>
+            <start_cmd>bin/pg_ctl</start_cmd>
+            <port>5432</port>
+            <socket>/tmp</socket>
+            <listen_addresses>localhost</listen_addresses>
+            <change_password>ALTER USER postgres WITH PASSWORD 'postgres'</change_password>
+            <shutdown>pg_ctl stop -m fast</shutdown>
+            <ping>SELECT version()</ping>
+        </install>
+        <test>
+            <oltp>scripts/tcl/postgres/tprocc/pg_tprocc_single.sh</oltp>
+            <olap>scripts/tcl/postgres/tproch/pg_tproch_single.sh</olap>
+            <profile>scripts/tcl/postgres/tprocc/pg_tprocc_profile.sh</profile>
+            <compare>scripts/tcl/postgres/tprocc/pg_tprocc_profile.sh</compare>
+        </test>
+        <pipeline>
+            <single_c>clone build package commit_msg install init start ping run_sql:change_password start_tests:oltp run_sql:shutdown</single_c>
+            <single_h>clone build package commit_msg install init start ping run_sql:change_password start_tests:olap run_sql:shutdown</single_h>
+            <profile>profile</profile>
+            <profileid>1000</profileid>
+            <compare>compare</compare>
+            <compare_profileid>1000</compare_profileid>
+        </pipeline>
+    </PostgreSQL>
+    <MySQL>
+        <build>
+            <repo_url>https://github.com/mysql/mysql-server.git</repo_url>
+            <ref_regexp>refs/(tags|heads)/(.+)</ref_regexp>
+            <overwrite>false</overwrite>
+            <local_dir_root>/opt/hammerdb-ci/providers/mysql</local_dir_root>
+            <build_dir>/opt/hammerdb-ci/providers/mysql/builds</build_dir>
+            <build_cmd>cmake . -DFORCE_INSOURCE_BUILD=1 -DBUILD_CONFIG=mysql_release -DWITH_BOOST=boost -DDOWNLOAD_BOOST=1 ; cmake --build .</build_cmd>
+            <build_cmd_args>--parallel 8</build_cmd_args>
+            <package_cmd>make package</package_cmd>
+        </build>
+        <install>
+            <install_package>tar -xvf</install_package>
+            <installer>bin/mysqld</installer>
+            <install_dir>/opt/hammerdb-ci/providers/mysql/installs</install_dir>
+            <config_dir>/opt/hammerdb-ci/providers/mysql/config</config_dir>
+            <defaults_file>/opt/hammerdb-ci/providers/mysql/config/my.cnf</defaults_file>
+            <io_config_file>/opt/hammerdb-ci/providers/mysql/config/myio.cnf</io_config_file>
+            <basedir>/opt/hammerdb-ci/providers/mysql/installs</basedir>
+            <datadir>data</datadir>
+            <innodb_log_group_home_dir>redo</innodb_log_group_home_dir>
+            <innodb_buffer_pool_size>auto</innodb_buffer_pool_size>
+            <init_args>defaults_file basedir datadir innodb_log_group_home_dir</init_args>
+            <start_cmd>bin/mysqld</start_cmd>
+            <start_args>defaults_file basedir datadir innodb_log_group_home_dir socket port</start_args>
+            <socket>/tmp/mysql.sock</socket>
+            <port>3306</port>
+            <run_sql_cmd>./bin/mysql -S {socket} --ssl-mode=DISABLED -vvv -e "{sql}"</run_sql_cmd>
+            <change_password>ALTER USER 'root'@'localhost' IDENTIFIED BY 'mysql'</change_password>
+            <shutdown>shutdown</shutdown>
+            <ping>select @@version</ping>
+        </install>
+        <test>
+            <oltp>scripts/tcl/mysql/tprocc/mysql_tprocc_single.sh</oltp>
+            <olap>scripts/tcl/mysql/tproch/mysql_tproch_single.sh</olap>
+            <profile>scripts/tcl/mysql/tprocc/mysql_tprocc_profile.sh</profile>
+            <compare>scripts/tcl/mysql/tprocc/mysql_tprocc_profile.sh</compare>
+        </test>
+        <pipeline>
+            <single_c>clone build package commit_msg install init run_sql:shutdown start ping run_sql:change_password start_tests:oltp run_sql:shutdown</single_c>
+            <single_h>clone build package commit_msg install init run_sql:shutdown start ping run_sql:change_password start_tests:olap run_sql:shutdown</single_h>
+            <profile>profile</profile>
+            <profileid>1000</profileid>
+            <compare>compare</compare>
+            <compare_profileid>1000</compare_profileid>
+        </pipeline>
+    </MySQL>
+    <Oracle>
+    <!-- Placeholder for Oracle database automation -->
+    </Oracle>
+    <SQLServer>
+    <!-- Placeholder for SQL Server database automation -->
+    </SQLServer>
+    <Db2>
+    <!-- Placeholder for IBM Db2 database automation -->
+    </Db2>
+</ci>
