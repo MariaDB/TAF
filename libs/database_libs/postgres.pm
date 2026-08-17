@@ -1083,6 +1083,7 @@ sub _pg_ctl_status {
     # pg_ctl status: -q is not valid for all pg_ctl versions (e.g. PG 11).
     # Suppress output by redirecting through the shell instead.
     my $cmd = join(' ', ($self->_os_prefix()), $pg_ctl, 'status', "-D", $data_dir, '>/dev/null 2>&1');
+    $cmd = "cd /tmp && $cmd" if $self->{is_root};
     my $rc = system($cmd);
     return ($rc == 0) ? 0 : 1;
 }
@@ -1134,6 +1135,14 @@ sub _run_command {
     my $_tag = "${_me}::_run_command($tag): ";
 
     my $cmd_str = join(' ', @$cmd_ref);
+
+    # runuser (invoked via _os_prefix() when running as root) fails outright
+    # if it cannot stat/chdir back to the shell's current working directory,
+    # even though that directory is never actually used by postgres/pg_ctl --
+    # TAF's own working directory is commonly a root-owned checkout (e.g.
+    # /root/taf), which the target OS user has no traversal rights into.
+    # /tmp is always world-traversable, so hop there first to sidestep it.
+    $cmd_str = "cd /tmp && $cmd_str" if $self->{is_root};
 
     if ($logfile) {
         if (open(my $fh, '>>', $logfile)) {

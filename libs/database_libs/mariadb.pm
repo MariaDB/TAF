@@ -2332,6 +2332,14 @@ sub _run_command {
     # Build command string from array reference
     my $cmd_str = join(' ', @$cmd_ref);
 
+    # runuser (invoked via _os_prefix() when running as root) fails outright
+    # if it cannot stat/chdir back to the shell's current working directory,
+    # even though that directory is never actually used by mariadbd -- TAF's
+    # own working directory is commonly a root-owned checkout (e.g.
+    # /root/taf), which the target OS user has no traversal rights into.
+    # /tmp is always world-traversable, so hop there first to sidestep it.
+    $cmd_str = "cd /tmp && $cmd_str" if $self->{is_root};
+
     # Optionally log the command before execution
     if ($logfile) {
         if (open(my $fh, '>>', $logfile)) {
@@ -2660,6 +2668,13 @@ sub _spawn_background {
 
         # detach from parent session
         POSIX::setsid();
+
+        # See _run_command's matching comment: runuser (via _os_prefix())
+        # fails outright if it can't stat/chdir back to the inherited cwd,
+        # which is commonly a root-owned TAF checkout the 'mysql' OS user
+        # can't traverse into. exec() below runs runuser directly (no shell
+        # to prepend a "cd" to), so chdir here in the child instead.
+        chdir('/tmp') if $self->{is_root};
 
         # close inherited filehandles (safety hardening)
         for my $fd (3 .. 255) {
