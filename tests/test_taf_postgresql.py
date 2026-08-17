@@ -261,12 +261,15 @@ def benchmark_result(tmp_path_factory):
 def _shutdown_pg_if_running() -> None:
     """Best-effort: stop PG if still running (cleanup after L3/L5).
 
-    pg_ctl stop cannot run as root — we find postmaster.pid and send
-    SIGTERM directly to the process, or run pg_ctl as postgres user via su.
+    TAF and the pytest process run as the same non-root user, and PostgreSQL
+    now always runs as that same user too — so pg_ctl stop needs no su/root.
+    We only fall back to su when the harness itself happens to run as root
+    (EUID 0), since pg_ctl unconditionally refuses to operate as root.
     """
     import signal as _signal
     from pathlib import Path
     pg_ctl = PG_BIN / "pg_ctl"
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
     # TAF creates the data directory in /tmp/taf_pg_<PID>/data/ or in TAF_ROOT/data/
     search_roots = [TAF_ROOT, Path("/tmp")]
     for root in search_roots:
@@ -274,13 +277,19 @@ def _shutdown_pg_if_running() -> None:
             continue
         for pid_file in root.rglob("postmaster.pid"):
             data_dir = pid_file.parent
-            # Try via postgres user (pg_ctl cannot run as root)
             if pg_ctl.is_file():
-                r = subprocess.run(
-                    ["su", "-s", "/bin/sh", "postgres", "-c",
-                     f"{pg_ctl} stop -D {data_dir} -m fast -w -t 30"],
-                    capture_output=True, timeout=45,
-                )
+                if is_root:
+                    r = subprocess.run(
+                        ["su", "-s", "/bin/sh", "postgres", "-c",
+                         f"{pg_ctl} stop -D {data_dir} -m fast -w -t 30"],
+                        capture_output=True, timeout=45,
+                    )
+                else:
+                    r = subprocess.run(
+                        [str(pg_ctl), "stop", "-D", str(data_dir),
+                         "-m", "fast", "-w", "-t", "30"],
+                        capture_output=True, timeout=45,
+                    )
                 if r.returncode == 0:
                     continue
             # Fallback: kill postmaster directly via SIGTERM
