@@ -2693,7 +2693,12 @@ sub SetConnectionArgs {
         # even for a socket connection: libpq needs it to build the
         # ".s.PGSQL.<port>" filename.
         if ($options{db_clients_use_unix_socket}) {
-            $args .= " --pgsql-host='" . dirname($options{db_socket} || '/var/run/postgresql') . "'";
+            # Utilities.pm always normalizes db_socket before test suites run;
+            # the tmp_dir fallback here only guards against a defensive edge
+            # case and must stay TAF-user-owned (never a root-owned system
+            # path such as /var/run/postgresql) so the non-root TAF/PostgreSQL
+            # user can actually reach the socket.
+            $args .= " --pgsql-host='" . dirname($options{db_socket} || ($options{tmp_dir} // '/tmp') . '/db.sock') . "'";
         } else {
             $args .= " --pgsql-host='127.0.0.1'";
         }
