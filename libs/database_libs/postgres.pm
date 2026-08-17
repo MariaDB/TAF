@@ -219,44 +219,32 @@ sub new {
     $self->{log_start}   = File::Spec->catfile($self->{tmpdir}, "postgresql_start.log");
     $self->{pidfile}     = File::Spec->catfile($self->{tmpdir}, "postgresql_runtime.pid");
 
-    # When TAF runs as root, initdb and pg_ctl must run as the postgres OS user.
-    # Detect this at construction time so all lifecycle methods can wrap commands.
+    # When TAF runs as root, initdb and pg_ctl must run as a non-root OS user --
+    # postgres refuses to run as root outright (unconditional getuid()==0 check
+    # in the server/initdb binaries themselves, not a TAF policy choice).
+    # Mirrors mariadb.pm's _os_prefix() handling so both engine plugins deal
+    # with a root-executed TAF the same way.
     $self->{is_root} = ($> == 0) ? 1 : 0;
     if ($self->{is_root}) {
         my @pw = getpwnam('postgres');
+        unless (@pw) {
+            PrintVerbose("${_me}::new - running as root and OS user 'postgres' does not exist; creating it");
+            system('useradd', '--system', '--no-create-home', '--shell', '/sbin/nologin', 'postgres');
+            if ($? != 0) {
+                PrintWarning("${_me}::new - useradd postgres failed (exit " . ($? >> 8) . ")");
+            }
+            @pw = getpwnam('postgres');
+        }
         if (@pw) {
-            $self->{os_user}  = 'postgres';
-            $self->{os_uid}   = $pw[2];
-            $self->{os_gid}   = $pw[3];
+            $self->{os_user} = 'postgres';
+            $self->{os_uid}  = $pw[2];
+            $self->{os_gid}  = $pw[3];
             PrintVerbose("${_me}::new - running as root; cluster operations will use OS user 'postgres' (uid=$pw[2])");
-
-            # If data_dir or tmpdir are under /root (not accessible to postgres),
-            # redirect them to /tmp where the postgres user can traverse.
-            my $pg_base = "/tmp/taf_pg_$$";
-            if ($self->{data_dir} && $self->{data_dir} =~ m{^/root(/|$)}) {
-                $self->{data_dir} = "$pg_base/data";
-                PrintVerbose("${_me}::new - data_dir relocated to $self->{data_dir} (root path inaccessible to postgres)");
-            }
-            if ($self->{tmpdir} && $self->{tmpdir} =~ m{^/root(/|$)}) {
-                $self->{tmpdir} = "$pg_base/tmp";
-                PrintVerbose("${_me}::new - tmpdir relocated to $self->{tmpdir} (root path inaccessible to postgres)");
-                # Ensure log paths are updated
-                $self->{log_init}  = File::Spec->catfile($self->{tmpdir}, "postgresql_initdb.log");
-                $self->{log_start} = File::Spec->catfile($self->{tmpdir}, "postgresql_start.log");
-                $self->{pidfile}   = File::Spec->catfile($self->{tmpdir}, "postgresql_runtime.pid");
-            }
-            # Create and chown the pg_base dirs so postgres can write into them
-            if ($self->{data_dir} =~ m{^\Q$pg_base\E} || $self->{tmpdir} =~ m{^\Q$pg_base\E}) {
-                File::Path::make_path("$pg_base/data", "$pg_base/tmp")
-                    or PrintWarning("${_me}::new - could not pre-create $pg_base dirs");
-                chown($pw[2], $pw[3], $pg_base, "$pg_base/data", "$pg_base/tmp");
-                chmod(0700, $pg_base, "$pg_base/data", "$pg_base/tmp");
-            }
         } else {
-            PrintWarning("${_me}::new - running as root but OS user 'postgres' not found; initdb may fail");
-            $self->{os_user}  = undef;
-            $self->{os_uid}   = undef;
-            $self->{os_gid}   = undef;
+            PrintWarning("${_me}::new - running as root but OS user 'postgres' not found/creatable; initdb will refuse to start");
+            $self->{os_user} = undef;
+            $self->{os_uid}  = undef;
+            $self->{os_gid}  = undef;
         }
     }
 
@@ -956,13 +944,22 @@ sub _db_prepare_data_dir {
     };
 
     # When running as root, hand ownership to the postgres OS user so initdb
-    # and pg_ctl can read and write the cluster directory.
+    # and pg_ctl can read and write the cluster directory. Also chown tmpdir,
+    # since the socket, pidfile, and log paths pg_ctl/postgres open themselves
+    # all live there. Recursive, not just the directory itself: unlike
+    # data_dir (wiped and recreated from scratch above), tmpdir persists
+    # across attempts, so a prior run's pidfile/log (created before this fix
+    # existed, or by a run that failed before reaching this chown) can already
+    # exist there owned by root -- a non-recursive chown leaves those files
+    # unwritable by 'postgres', and pg_ctl/postgres fail outright when they
+    # can't create/write their own runtime files.
     if ($self->{is_root} && defined $self->{os_uid}) {
         chown($self->{os_uid}, $self->{os_gid}, $dir)
             or PrintWarning("_db_prepare_data_dir: chown $dir to $self->{os_user} failed: $!");
-        # Also chown tmpdir so pg_ctl can write the startup log
-        chown($self->{os_uid}, $self->{os_gid}, $self->{tmpdir})
-            or PrintWarning("_db_prepare_data_dir: chown tmpdir failed: $!");
+        if ($self->{tmpdir} && -d $self->{tmpdir}) {
+            system('chown', '-R', "$self->{os_uid}:$self->{os_gid}", $self->{tmpdir}) == 0
+                or PrintWarning("_db_prepare_data_dir: recursive chown of tmpdir failed (exit " . ($? >> 8) . ")");
+        }
     }
 
     return OK;
