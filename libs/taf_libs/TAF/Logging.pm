@@ -126,6 +126,7 @@ our @EXPORT = qw(
     PrintHeader
     PrintLine
     PrintPrompt
+    PrintTafConfigToFile
     PrintWarning
     PrintWarningsArray
     PrintVerbose
@@ -426,6 +427,93 @@ sub PrintAllVariables {
 
     PrintHeader("Runtime Configuration End", "*", 71);
 
+}
+
+#===============================================================================
+# PrintTafConfigToFile
+#
+# PURPOSE:
+#     When --debug-print-config is given, dump the fully resolved options,
+#     dirs, and files hashes, plus the full process environment (%ENV), to a
+#     dedicated text file. Unlike PrintAllVariables (which goes through the
+#     verbose logger and %ENV omitted), this always writes regardless of
+#     --verbose and includes %ENV, since TAF and the DB software it drives
+#     both pick up behavior from inherited environment variables (paths,
+#     locale, etc.) that never go through the properties/CLI system at all.
+#
+# PARAMETERS:
+#     $ctx
+#         Framework context hashref containing options, dirs, and files.
+#
+# BEHAVIOR:
+#     - No-op unless $ctx->{options}{debug_print_config} is true.
+#     - Writes to $ctx->{options}{debug_print_config_path}/
+#       taf_configuration_dump_YYYYMMDD_HHMMSS.txt (path defaulted to
+#       logs_dir by TAF::Utilities::SetupVariables when not user-supplied).
+#     - Redacts known secret-shaped keys (passwords, tokens) by name.
+#     - Writes every line as a YAML comment ("# ..."), with each section's
+#       entries indented 4 spaces, so the dump can be pasted straight into a
+#       YAML file (e.g. result.yaml) as a readable comment block.
+#
+# RETURNS:
+#     None.
+#
+# NOTES:
+#     - Must run only after options/dirs have been fully resolved (properties
+#       + command-line overrides merged).
+#     - Must not terminate the run; this is a diagnostic side effect only.
+#===============================================================================
+sub PrintTafConfigToFile {
+    my ($ctx) = @_;
+
+    my $options = $ctx->{options};
+
+    # debug_print_config can arrive via --debug-print-config (lands in
+    # $ctx->{flags}, set by CommandLine.pm) or via the taf.debug_print_config
+    # property (lands in $ctx->{options}, set by TAF::Properties) -- honor
+    # either entry point.
+    return unless $ctx->{flags}{debug_print_config} || $options->{debug_print_config};
+
+    my $dirs = $ctx->{dirs};
+    my $files = $ctx->{files};
+
+    my $dump_dir = $options->{debug_print_config_path} // $options->{logs_dir};
+    unless ($dump_dir && -d $dump_dir) {
+        PrintWarning("PrintTafConfigToFile: dump directory missing or invalid: " .
+                     ($dump_dir // "<undef>"));
+        return;
+    }
+
+    my @t = localtime();
+    my $stamp = sprintf("%04d%02d%02d_%02d%02d%02d",
+                         $t[5] + 1900, $t[4] + 1, $t[3], $t[2], $t[1], $t[0]);
+    my $dump_file = File::Spec->catfile($dump_dir, "taf_configuration_dump_$stamp.txt");
+
+    # Case-insensitive substring match, not an exact-key list: %ENV in
+    # particular carries secrets under names options/dirs/files never use
+    # (PGPASSWORD, MYSQL_PWD, AWS_SECRET_*, ...).
+    my $redact_re = qr/(AUTH|COOKIE|CREDENTIAL|PASS|PWD|PRIVATE|SECRET|TOKEN)/i;
+
+    open(my $fh, '>', $dump_file) or do {
+        PrintWarning("PrintTafConfigToFile: could not write $dump_file: $!");
+        return;
+    };
+
+    print $fh "# === TAF RESOLVED CONFIGURATION ===\n";
+    for my $section (["options", $options], ["dirs", $dirs], ["files", $files], ["ENV", \%ENV]) {
+        my ($name, $href) = @$section;
+        print $fh "# $name:\n";
+        for my $key (sort keys %$href) {
+            my $value = $href->{$key};
+            $value = defined($value) ? $value : '<undef>';
+            $value = '***REDACTED***' if $key =~ $redact_re && $value ne '<undef>' && $value ne '';
+            print $fh "#     $key: $value\n";
+        }
+    }
+    print $fh "# === END TAF RESOLVED CONFIGURATION ===\n";
+    close $fh;
+
+    PrintVerbose("PrintTafConfigToFile: wrote resolved configuration to $dump_file");
 }
 
 #===============================================================================

@@ -1583,6 +1583,7 @@ sub SetupVariables {
     # Directory-related defaults
     $options_ref->{archive_path}      //= $dirs_ref->{working} . "archive/";
     $options_ref->{logs_dir}          //= $dirs_ref->{working} . "logs/";
+    $options_ref->{debug_print_config_path} //= $options_ref->{logs_dir};
     $options_ref->{reports_directory} //= $dirs_ref->{working} . "reports/";
     $options_ref->{results_root_dir}  //= $dirs_ref->{working} . "results/";
     $options_ref->{tmp_dir}           //= $dirs_ref->{working} . "tmp/";

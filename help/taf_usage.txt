@@ -869,6 +869,19 @@ Note: setup-client
                    : Enable debug output.
                    : Default(false)
 
+   O = --debug-print-config
+   P = taf.debug_print_config={false|true}
+                   : Enable dumping of the fully resolved TAF configuration.
+                   : Output is written to a text file.
+                   : Filename: taf_configuration_dump_YYYYMMDD_HHMMSS.txt
+                   : See: debug_print_config_path below
+                   : Default(false)
+
+   O = --debug-print-config-path=/path/to/dump/
+   P = taf.debug_print_config_path=/path/to/dump/
+                   : Directory where the configuration dump file is written.
+                   : Default($working/logs/)
+
    O = --help
                    : Print this usage.
 

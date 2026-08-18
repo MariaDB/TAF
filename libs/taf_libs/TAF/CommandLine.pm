@@ -334,6 +334,7 @@ sub ParseCommandLineOptions {
         #-----------------------------------------------------------------------
         "tools-debug"                 => \$tmp_ref->{tools_debug},
         "debug-print-config"          => \$flags_ref->{debug_print_config},
+        "debug-print-config-path:s"   => \$tmp_ref->{debug_print_config_path},
 
         #-----------------------------------------------------------------------
         # Info & commandline flags/options
