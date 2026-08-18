@@ -3,7 +3,7 @@ package ClientCmakeBuild;
 # ClientCmakeBuild
 #
 # Created: November 2025
-# Last Modified: January 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -118,9 +118,20 @@ use constant IS_LINUX   => ($^O =~ /^(linux)/oi);
 use constant IS_SOLARIS => ($^O =~ /^(solaris)/oi);
 
 my $debug          = 0;
-my $startDirectory = getcwd;
+my $cmakeArgs = '';
+my $configTool     = undef;
 my $name           = "ClientCmakeBuild-> ";
-my $ConfigTool     = undef;
+my $isMariaDBFamily = 0;
+my $isPG            = 0;
+my $isOracle        = 0;
+my @makers = qw(
+    mariadb
+    mysql
+    percona
+    postgresql
+    postgres
+    oracle
+);
 
 #------------------------------------------------------------------------------
 sub new {
@@ -132,35 +143,34 @@ sub new {
 # Build
 #
 # PURPOSE:
-#     Execute a deterministic, fully logged CMake-based build for client
-#     components such as Sysbench. Standardizes environment setup, resolves
-#     include and library paths, constructs stable CMake arguments, and invokes
-#     CMake and Make with explicit error handling.
+#     Perform a deterministic, fully logged CMake-based client build.
+#     Normalizes environment setup, resolves include/library paths, constructs
+#     stable CMake arguments, and invokes CMake and Make with strict error
+#     handling. Used for Sysbench and any future CMake-driven client tools.
 #
 # BEHAVIOR:
-#     - Reject unsupported platforms (Windows, Cygwin, Solaris).
-#     - Validate required arguments: install_dir and cmake_dir.
-#     - Remove any existing build log.
-#     - Print debug information when enabled.
-#     - Locate a vendor config tool via SetConfigTool() (optional).
-#     - Resolve include and library paths via SetLibAndInclude().
-#     - Append resolved paths to CMake arguments.
-#     - Change to cmake_dir and remove CMakeCache.txt.
-#     - Invoke CMake using the directory-based invocation ("cmake .").
-#     - Invoke "make clean" when Makefile exists.
-#     - Invoke "make" to build targets.
-#     - Restore the original working directory.
+#     - Rejects unsupported platforms (Windows, Cygwin, Solaris).
+#     - Validates required arguments: install_dir and cmake_dir.
+#     - Removes any existing build log.
+#     - Emits detailed debug output when enabled.
+#     - Detects database maker from install_dir and sets maker flags.
+#     - Calls _SetupBuild() to configure environment for PG or MySQL-family.
+#     - Changes to cmake_dir and removes stale CMakeCache.txt.
+#     - Invokes CMake using directory-based invocation ("cmake .").
+#     - Runs "make clean" when Makefile exists.
+#     - Runs "make" to build targets.
+#     - Restores the original working directory on completion or error.
 #
 # INPUTS:
 #     $self
 #         Object instance created via ClientCmakeBuild->new().
 #
 #     %args
-#         install_dir    - Required. Root of the normalized client install.
+#         install_dir    - Required. Root of the normalized client installation.
 #         cmake_dir      - Required. Directory containing CMakeLists.txt.
 #         cmake_args     - Optional. Additional CMake arguments.
 #         build_log      - Optional. Path to build log file.
-#         debug          - Optional. Enable debug output.
+#         debug          - Optional. Enable verbose debug output.
 #
 # RETURNS:
 #     OK
@@ -170,429 +180,485 @@ sub new {
 #         Any validation, configuration, CMake, Make, or filesystem step failed.
 #
 # NOTES:
-#     - This routine is INTERNAL to the client build tooling.
-#     - All output from CMake and Make is appended to the build log.
-#     - Debug mode prints detailed trace information for troubleshooting.
+#     - All CMake and Make output is appended to the build log.
+#     - This routine is internal to the client build tooling.
+#     - Behavior is strict and fail-fast; no silent fallback paths.
 ################################################################################
 sub Build {
     my ($self, %args) = @_;
 
-    my $installDir = $args{install_dir};
-    my $cmakeDir   = $args{cmake_dir};
-    my $cmakeArgs  = $args{cmake_args} // '';
-    my $buildLog   = $args{build_log} // File::Spec->catfile($cmakeDir, 'build.log');
-    $debug         = $args{debug} // 0;
+    my $installDir     = $args{install_dir};
+    my $cmakeDir       = $args{cmake_dir};
+    $cmakeArgs         = $args{cmake_args} // '';
+    my $buildLog       = $args{build_log} // File::Spec->catfile($cmakeDir, 'build.log');
+    $debug             = $args{debug} // 0;
+    my $startDirectory = getcwd;
 
     # Platform gating
     if (IS_WINDOWS || IS_CYGWIN || IS_SOLARIS) {
-        DebugPrint("ERROR: Unsupported platform for client build");
+        _DebugPrint("ERROR: Unsupported platform for client build");
         return ERROR;
     }
 
     # Required arguments
-    unless ($installDir && $cmakeDir) {
-        DebugPrint("ERROR: install_dir and cmake_dir are required");
+    if (! $installDir || ! $cmakeDir) {
+        _DebugPrint("ERROR: install_dir and cmake_dir are required");
         return ERROR;
     }
-
+    
+    # Which DB maker
     my $maker = _DetectMakerFromInstallDir($installDir);
-    unless ($maker) {
-        DebugPrint("ERROR: install_dir does not encode a known database maker");
-        DebugPrint("  install_dir = $installDir");
+    if (! $maker) {
+        _DebugPrint("ERROR: install_dir does not encode a known database maker");
+        _DebugPrint("  install_dir = $installDir");
         return ERROR;
     }
-    DebugPrint("Detected maker from install_dir -> $maker");
+    _DebugPrint("Detected maker from install_dir -> $maker");
 
     # Remove old log
-    Remove($buildLog) if -e $buildLog;
+    _Remove($buildLog) if -e $buildLog;
 
-    DebugPrint("************************************************");
-    DebugPrint("Starting cmake build...");
-    DebugPrint("Install Dir    = $installDir");
-    DebugPrint("CMake Dir      = $cmakeDir");
-    DebugPrint("CMake Args     = $cmakeArgs");
-    DebugPrint("Build Log      = $buildLog");
+    # Give debug
+    _DebugPrint("************************************************");
+    _DebugPrint("Starting cmake build...");
+    _DebugPrint("Install Dir    = $installDir");
+    _DebugPrint("CMake Dir      = $cmakeDir");
+    _DebugPrint("CMake Args     = $cmakeArgs");
+    _DebugPrint("Build Log      = $buildLog");
 
-    # Config tool (optional)
-    return ERROR unless SetConfigTool($installDir) == OK;
-
-    # Resolve include/lib
-    return ERROR unless SetLibAndInclude($installDir, $maker) == OK;
-
-    # Base include/lib flags
-    $cmakeArgs .= " -DCMAKE_INCLUDE_PATH='$ENV{INC}'";
-    $cmakeArgs .= " -DCMAKE_LIBRARY_PATH='$ENV{LIB}'";
-    $cmakeArgs .= " -DMYSQL_INCLUDE_DIR='$ENV{INC}'";
-    $cmakeArgs .= " -DMYSQL_LIB_DIR='$ENV{LIB}'";
-
-    #
-    # Resolve libmysqlclient.so for all MySQL versions.
-    # 8.0 ships an unversioned libmysqlclient.so
-    # 8.4 ships only versioned libs (libmysqlclient.so.21, etc.)
-    #
-    my @candidates = glob(File::Spec->catfile($ENV{LIB}, 'libmysqlclient.so*'));
-    my $libmysql;
-
-    for my $cand (@candidates) {
-        next if $cand =~ /\.a$/;      # skip static archives
-        next if $cand =~ /pkgconfig/; # safety
-        if (-f $cand) {
-            $libmysql = $cand;
-            last;
-        }
-    }
-
-    if ($libmysql) {
-        DebugPrint("Resolved libmysqlclient = $libmysql");
-        $cmakeArgs .= " -DLIBMYSQL_INCLUDE_DIR='$ENV{INC}'";
-        $cmakeArgs .= " -DLIBMYSQL_LIB='$libmysql'";
-    } else {
-        DebugPrint("WARNING: No usable libmysqlclient.so found under $ENV{LIB}");
+    # Setup Build (PG or MySQL-family)
+    _DebugPrint("Calling SetupBuild");
+    if (_SetupBuild($installDir) != OK) {
+        return ERROR;
     }
 
     # Enter build directory
-    chdir($cmakeDir) or do {
-        DebugPrint("ERROR: Failed to chdir to $cmakeDir");
+    if (! chdir($cmakeDir)) {
+        _DebugPrint("ERROR: Failed to chdir to $cmakeDir");
         return ERROR;
-    };
+    }
 
-    Remove("CMakeCache.txt") if -e "CMakeCache.txt";
+    # Remove stale CMakeCache
+    if (-e "CMakeCache.txt") {
+        _Remove("CMakeCache.txt");
+    }
 
-    # Correct CMake invocation
-    my $cmakeCmd = "$ENV{CMAKE_PATH} . $cmakeArgs >> $buildLog 2>&1";
-    DebugPrint($cmakeCmd);
+    # Invoke CMake
+    my $cmakeCmd = "$ENV{CMAKE_PATH} . $cmakeArgs >> '$buildLog' 2>&1";
 
-    if (system($cmakeCmd) >> 8) {
-        DebugPrint("ERROR: CMake failed. See log: $buildLog");
+    _DebugPrint($cmakeCmd);
+
+    if ((system($cmakeCmd) >> 8) != 0) {
+        _DebugPrint("ERROR: CMake failed. See log: $buildLog");
         chdir($startDirectory);
         return ERROR;
     }
 
-    DebugPrint("Linux Sysbench Building!") if IS_LINUX;
+    _DebugPrint("Linux Sysbench Building!") if IS_LINUX;
 
     # make clean
     if (-e "Makefile") {
-        if (system("make clean >> '$buildLog' 2>&1") >> 8) {
-            DebugPrint("ERROR: make clean failed. See log: $buildLog");
+        if ((system("make clean >> '$buildLog' 2>&1") >> 8) != 0) {
+            _DebugPrint("ERROR: make clean failed. See log: $buildLog");
             chdir($startDirectory);
             return ERROR;
         }
     }
 
     # make
-    if (system("make >> '$buildLog' 2>&1") >> 8) {
-        DebugPrint("ERROR: make failed. See log: $buildLog");
+    if ((system("make >> '$buildLog' 2>&1") >> 8) != 0) {
+        _DebugPrint("ERROR: make failed. See log: $buildLog");
         chdir($startDirectory);
         return ERROR;
     }
 
     # Restore working directory
-    chdir($startDirectory) or do {
-        DebugPrint("ERROR: Failed to restore working directory");
+    if (! chdir($startDirectory)) {
+        _DebugPrint("ERROR: Failed to restore working directory");
         return ERROR;
-    };
+    }
 
     return OK;
 }
 
 ################################################################################
-# SetConfigTool
+####################### PostgreSQL Build Sub ###################################
+################################################################################
+
+################################################################################
+# _SetupForPGBuild
 #
 # PURPOSE:
-#     Locate a vendor-specific database client configuration tool
-#     (mysql_config or mariadb_config) within the given installation directory.
-#     The tool is optional and used only as a hint source for include/library
-#     layout; correctness of the client build does not depend on its presence.
+#     Configure environment and CMake flags for PostgreSQL client builds.
+#     Resolves include and library directories via pg_config, validates required
+#     PostgreSQL headers, and exports deterministic include/lib paths for use
+#     by the CMake build process.
 #
 # BEHAVIOR:
-#     - Instantiate an InstallSearch object to scan the install tree.
-#     - Retrieve a list of candidate subdirectories under installDir.
-#     - Check installDir/bin for known config tool names:
-#           mysql_config-64
-#           mysql_config
-#           mariadb_config
-#     - For each direct candidate:
-#           * If the file exists but is not executable, attempt chmod 0755.
-#           * If executable, set $ConfigTool and return OK.
-#     - If no direct hit is found, call InstallSearch->FindBin() to search
-#       recursively for the same candidate names.
-#     - If a valid tool is found, set $ConfigTool and return OK.
-#     - If no tool is found anywhere under installDir:
-#           * Emit detailed diagnostics describing expected development packages.
-#           * Return ERROR.
+#     - Locates pg_config under install_dir/bin or /usr/bin.
+#     - Queries pg_config for includedir and libdir.
+#     - Validates that both directories exist.
+#     - Confirms presence of the required PostgreSQL client header:
+#           libpq-fe.h
+#       (only the libpq client header is needed -- drv_pgsql.c is a libpq
+#       client, not a server-side extension, so the server-only postgres.h
+#       is deliberately not required here)
+#     - Exports INC and LIB to the environment.
+#     - Appends PostgreSQL-specific include and library flags to cmakeArgs.
+#     - Emits detailed debug output when enabled.
 #
 # INPUTS:
 #     $installDir
-#         Root installation directory to search for config utilities.
+#         Root directory of the normalized PostgreSQL installation.
 #
 # RETURNS:
 #     OK
-#         A valid config tool was located and stored in $ConfigTool.
+#         PostgreSQL environment successfully configured.
 #
 #     ERROR
-#         No config tool was found under installDir or its subdirectories.
+#         pg_config missing, invalid include/lib directories, or required
+#         headers not found.
 #
 # NOTES:
-#     - This routine is INTERNAL to the client build system.
-#     - The config tool is optional; SetLibAndInclude() can fall back to
-#       deterministic filesystem discovery when config tool output is unusable.
-#     - InstallSearch must provide GetBaseDirList() and FindBin().
-#     - Supports both MySQL and MariaDB client layouts.
+#     - This routine is strict and fail-fast; no fallback paths are used.
+#     - Only PostgreSQL client builds use this setup path.
 ################################################################################
-sub SetConfigTool {
+sub _SetupForPGBuild {
     my ($installDir) = @_;
 
-    # Prefer the classic tool first, then mariadb_config, then the broken -64 variant
-    for my $candidate ('mysql_config', 'mariadb_config', 'mysql_config-64') {
-        my $direct = File::Spec->catfile($installDir, 'bin', $candidate);
+    _DebugPrint("SetupForPGBuild");
 
-        if (-e $direct && ! -x $direct) {
-            DebugPrint("Config tool found but not executable: $direct");
-            DebugPrint("Attempting to fix permissions (chmod +x)...");
-            chmod 0755, $direct;
-        }
-
-        if (-x $direct) {
-            # Validate that the tool actually works (8.4's mysql_config is a wrapper that fails)
-            my $test = `$direct --variable=pkgincludedir 2>&1`;
-            if ($test =~ /error/i || $test =~ /missing/i) {
-                DebugPrint("Config tool unusable: $direct");
-                next;
-            }
-    
-            $ConfigTool = $direct;
-            DebugPrint("Config tool (direct) = $ConfigTool");
-            return OK;
+    # Locate pg_config
+    my $pgConfig;
+    for my $candidate (
+        File::Spec->catfile($installDir, 'bin', 'pg_config'),
+        '/usr/bin/pg_config',
+    ) {
+        if (-x $candidate) {
+            $pgConfig = $candidate;
+            last;
         }
     }
 
-    # No config tool found inside installDir -- this is allowed
-    DebugPrint("No config tool found inside installDir/bin; continuing without it");
-    $ConfigTool = undef;
+    if (! $pgConfig) {
+        _DebugPrint("ERROR: pg_config not found under $installDir/bin or /usr/bin");
+        return ERROR;
+    }
+
+    _DebugPrint("pg_config = $pgConfig");
+
+    # Resolve include and lib dirs
+    my $includeDir = `$pgConfig --includedir 2>/dev/null`;
+    my $libDir     = `$pgConfig --libdir 2>/dev/null`;
+    chomp($includeDir);
+    chomp($libDir);
+
+    if (! $includeDir || ! -d $includeDir) {
+        _DebugPrint("ERROR: pg_config --includedir returned invalid directory: '$includeDir'");
+        return ERROR;
+    }
+
+    if (! $libDir || ! -d $libDir) {
+        _DebugPrint("ERROR: pg_config --libdir returned invalid directory: '$libDir'");
+        return ERROR;
+    }
+    
+    my $libpq = File::Spec->catfile($includeDir, 'libpq-fe.h');
+    if (! -f $libpq) {
+        _DebugPrint("ERROR: Required PostgreSQL client header not found: $libpq");
+        return ERROR;
+    }
+
+    # Export to environment
+    $ENV{INC} = $includeDir;
+    $ENV{LIB} = $libDir;
+    $ENV{PGSQLH_PATH} = $ENV{INC};
+    $ENV{LIBPGSQL_LIB} = "$ENV{LIB}/libpq.so";
+
+    _DebugPrint("PostgreSQL INC = $includeDir");
+    _DebugPrint("PostgreSQL LIB = $libDir");
+
+    # Turn WITH_PGSQL=on
+    $cmakeArgs .= " -DWITH_PGSQL=ON -DWITH_MYSQL=OFF";
+
+    $cmakeArgs .= " -DPGSQLH_PATH=$ENV{PGSQLH_PATH}";
+    $cmakeArgs .= " -DLIBPGSQL_LIB=$ENV{LIBPGSQL_LIB}";
+    # Base CMake include/lib flags
+    $cmakeArgs .= " -DCMAKE_INCLUDE_PATH='$ENV{INC}'";
+    $cmakeArgs .= " -DCMAKE_LIBRARY_PATH='$ENV{LIB}'";
+
+    # PG-specific CMake flags
+    $cmakeArgs .= " -DPGSQL_INCLUDE_DIR='$ENV{INC}'";
+    $cmakeArgs .= " -DPGSQL_LIB_DIR='$ENV{LIB}'";
+
+    _DebugPrint("PG CMake Args updated");
+    _DebugPrint("Final PG CMake Args = $cmakeArgs");
+
     return OK;
 }
 
 ################################################################################
-# Subroutine: SetLibAndInclude
+################## MariaDB Family Build Subs ###################################
+################################################################################
+
+################################################################################
+# _SetupForMariaDBFamilyBuild
 #
 # PURPOSE:
-#     Resolve and configure the include and library directories required for
-#     building client components. Dispatches to a vendor-specific resolver
-#     based on the detected database maker. Supports ONLY MySQL-family makers
-#     (MySQL, MariaDB, Percona) for the 2.0 beta cycle.
+#     Configure environment and CMake flags for MySQL‑family client builds.
+#     Supports MySQL, MariaDB, and Percona installations. Locates an optional
+#     vendor config tool, resolves include and library directories, and applies
+#     deterministic MySQL‑family CMake flags.
 #
 # BEHAVIOR:
-#     - Logs the detected maker.
-#     - For MySQL-family makers, invokes _SetLibAndInclude_MySQLFamily().
-#     - For all other makers, returns ERROR immediately. This is intentional:
-#       BuildClient() is responsible for routing unsupported makers to future
-#       client build classes or expanded modules.
+#     - Calls _SetupConfigTool() to locate mysql_config or mariadb_config
+#       when present.
+#     - Calls _ResolveMySQLIncludeLib() to determine correct include and
+#       library paths using config‑tool output or strict filesystem discovery.
+#     - Appends MySQL‑family include and library flags to cmakeArgs.
+#     - Emits detailed debug output when enabled.
+#     - Fails immediately on any invalid or unusable configuration.
 #
-# PARAMETERS:
-#     $installDir  - Root of the normalized client installation.
-#     $maker       - Database maker token extracted from install_dir.
+# INPUTS:
+#     $installDir
+#         Root directory of the normalized MySQL‑family installation.
 #
 # RETURNS:
-#     OK    - Include and library paths were resolved successfully.
-#     ERROR - Unsupported maker or resolution failure.
+#     OK
+#         Environment successfully configured for MySQL‑family client builds.
+#
+#     ERROR
+#         Config tool unusable, include/lib resolution failed, or any required
+#         MySQL‑family component missing.
 #
 # NOTES:
-#     - This routine enforces deterministic vendor dispatch.
-#     - No guessing or fallback to non-MySQL layouts is permitted.
+#     - This routine is strict and fail‑fast; no silent fallback paths.
+#     - Only MySQL‑family client builds use this setup path.
 ################################################################################
-sub SetLibAndInclude {
-    my ($installDir, $maker) = @_;
-
-    DebugPrint("************************************************");
-    DebugPrint("SetLibAndInclude - maker = $maker");
-
-    if ($maker eq 'mysql' || $maker eq 'mariadb' || $maker eq 'percona') {
-        return _SetLibAndInclude_MySQLFamily($installDir);
-    }
-    elsif ($maker eq 'postgres' || $maker eq 'postgresql') {
-        return _SetLibAndInclude_PostgreSQL($installDir);
-    }
-    elsif ($maker eq 'oracle') {
-        # TO BE ADDED
-        DebugPrint("ERROR: Oracle client builds are not supported by this module");
-        return ERROR;
-    }
-
-    DebugPrint("ERROR: Unsupported maker '$maker' for client build");
-    return ERROR;
-}
-
-#-------------------------------------------------------------------------------
-# Subroutine: _SetLibAndInclude_MySQLFamily
-#
-# PURPOSE:
-#     Resolve include and library directories for MySQL-family client builds
-#     (MySQL, MariaDB, Percona) in a strict, deterministic, fail-fast manner.
-#
-# GUARANTEES:
-#     - INC and LIB are set only when both directories are positively validated.
-#     - No build proceeds unless a usable libmysqlclient and mysql.h are found.
-#     - MariaDB RPM layouts (lib64/, include/mysql/) are explicitly supported.
-#     - MySQL and Percona tarball layouts are supported.
-#     - Misleading or incorrect config-tool output is detected and corrected.
-#
-# LOGIC OVERVIEW:
-#     1. Query mysql_config or mariadb_config for pkgincludedir and pkglibdir.
-#     2. Accept config-tool paths only when:
-#           * They exist,
-#           * They reside under installDir,
-#           * They do not reference system paths (/usr),
-#           * MariaDB RPM misreporting (lib64/mysql) is corrected.
-#     3. If config-tool paths are unusable, perform filesystem discovery using:
-#           * _FindLibDir()
-#           * _FindIncludeDir()
-#     4. If still unresolved, apply strict MariaDB RPM fallback:
-#           * lib64/libmysqlclient.so
-#           * include/mysql/
-#     5. If no valid include/lib pair is found, return ERROR immediately.
-#
-# PARAMETERS:
-#     installDir  - Root directory of the normalized client installation.
-#
-# RETURNS:
-#     OK    - Both include and library directories resolved and validated.
-#     ERROR - Resolution failed; caller must abort the client build.
-#
-# NOTES:
-#     - This routine supports only MySQL-family clients.
-#     - PostgreSQL, Oracle, and other makers are intentionally unsupported.
-#     - No silent fallbacks. No partial success. No degraded builds.
-#-------------------------------------------------------------------------------
-sub _SetLibAndInclude_MySQLFamily {
+sub _SetupForMariaDBFamilyBuild {
     my ($installDir) = @_;
 
-    DebugPrint("SetLibAndInclude - MySQL family");
+    _DebugPrint("SetupForMySQLFamilyBuild");
 
-    # Attempt to use config tool
-    my $includeDir = `$ConfigTool --variable=pkgincludedir 2>/dev/null`;
-    my $libDir     = `$ConfigTool --variable=pkglibdir     2>/dev/null`;
-    chomp($includeDir);
-    chomp($libDir);
+    return ERROR if _SetupConfigTool($installDir) != OK;
+    return ERROR if _ResolveMySQLIncludeLib($installDir) != OK;
 
-    my $haveConfigInclude = $includeDir && -d $includeDir;
-    my $haveConfigLib     = $libDir     && -d $libDir;
+    _AppendMySQLCMakeFlags();
 
-    my $insideInstall =
-           ($haveConfigInclude && $includeDir =~ /^\Q$installDir\E/)
-        && ($haveConfigLib     && $libDir     =~ /^\Q$installDir\E/);
+    return OK;
+}
 
-    # Fix MariaDB RPM misreporting: pkglibdir = lib64/mysql (incorrect)
-    if ($libDir =~ m{/lib64/mysql$}) {
-        my $rpmLibDir = File::Spec->catdir($installDir, 'lib64');
-        if (-f File::Spec->catfile($rpmLibDir, 'libmysqlclient.so')) {
-            DebugPrint("MariaDB RPM layout detected; overriding pkglibdir to $rpmLibDir");
-            $libDir = $rpmLibDir;
-            $haveConfigLib = 1;
+################################################################################
+# _SetupConfigTool
+#
+# PURPOSE:
+#     Locate a usable MySQL‑family client configuration tool (mysql_config or
+#     mariadb_config) under install_dir/bin. The tool is optional and used only
+#     as a hint source for include and library layout. If no usable tool is
+#     found, the build continues using deterministic filesystem discovery.
+#
+# BEHAVIOR:
+#     - Scans install_dir/bin for the following tools:
+#           mysql_config
+#           mariadb_config
+#           mysql_config-64
+#     - If a tool exists but is not executable, attempts chmod 0755.
+#     - Executes the tool with --variable=pkgincludedir to verify usability.
+#     - On success, sets $configTool and returns OK.
+#     - If all candidates fail, sets $configTool to undef and returns OK,
+#       allowing fallback logic to handle include/lib resolution.
+#
+# INPUTS:
+#     $installDir
+#         Root directory of the normalized MySQL‑family installation.
+#
+# RETURNS:
+#     OK
+#         A usable config tool was found, or no tool was found but fallback
+#         discovery remains possible.
+#
+#     ERROR
+#         (Never returned.) This routine does not fail; it only determines
+#         whether a config tool is available.
+#
+# NOTES:
+#     - This routine is strict but non‑fatal; missing config tools are allowed.
+#     - Only MySQL‑family client builds use this setup path.
+################################################################################
+sub _SetupConfigTool {
+    my ($installDir) = @_;
+
+    _DebugPrint("SetupConfigTool");
+
+    for my $candidate ('mysql_config', 'mariadb_config', 'mysql_config-64') {
+        my $path = File::Spec->catfile($installDir, 'bin', $candidate);
+
+        if (-e $path && ! -x $path) {
+            _DebugPrint("Config tool found but not executable: $path");
+            chmod 0755, $path;
+        }
+
+        next if ! -x $path;
+
+        my $test = `$path --variable=pkgincludedir 2>&1`;
+        if ($test =~ /error/i || $test =~ /missing/i) {
+            _DebugPrint("Config tool unusable: $path");
+            next;
+        }
+        
+        $configTool = $path;
+        _DebugPrint("Config tool = $configTool");
+        return OK;
+    }
+
+    _DebugPrint("No config tool found; continuing without it");
+    $configTool = undef;
+
+    return OK;
+}
+
+################################################################################
+# _ResolveMySQLIncludeLib
+#
+# PURPOSE:
+#     Determine usable MySQL‑family include and library directories using either
+#     the vendor config tool (mysql_config or mariadb_config) or strict
+#     filesystem discovery. Validates required client components and exports
+#     deterministic INC and LIB paths for the CMake build.
+#
+# BEHAVIOR:
+#     - If a config tool is available:
+#         * Query pkgincludedir and pkglibdir.
+#         * Validate both directories exist.
+#         * Confirm pkglibdir contains libmysqlclient.so.
+#         * Accept paths only if they reside inside install_dir.
+#         * Correct known MariaDB RPM misreports of pkglibdir.
+#     - If config‑tool paths are unusable:
+#         * Fall back to deterministic filesystem discovery via:
+#               _FindLibDir()
+#               _FindIncludeDir()
+#     - If discovery succeeds:
+#         * Export INC and LIB to the environment.
+#     - If discovery fails:
+#         * Attempt RPM‑style fallback (lib64 + include/mysql).
+#     - If all methods fail:
+#         * Emit detailed diagnostics and return ERROR.
+#
+# INPUTS:
+#     $installDir
+#         Root directory of the normalized MySQL‑family installation.
+#
+# RETURNS:
+#     OK
+#         Usable include and library directories were resolved and exported.
+#
+#     ERROR
+#         Config‑tool output invalid, filesystem discovery failed, and no
+#         fallback layout matched.
+#
+# NOTES:
+#     - This routine is strict and fail‑fast; no guessing beyond known vendor
+#       directory patterns.
+#     - Only MySQL‑family client builds use this setup path.
+################################################################################
+sub _ResolveMySQLIncludeLib {
+    my ($installDir) = @_;
+
+    _DebugPrint("ResolveMySQLIncludeLib");
+
+    my $includeDir = '';
+    my $libDir     = '';
+
+    if ($configTool) {
+        $includeDir = `$configTool --variable=pkgincludedir 2>/dev/null`;
+        $libDir     = `$configTool --variable=pkglibdir     2>/dev/null`;
+        chomp($includeDir);
+        chomp($libDir);
+    }
+
+    my $haveInc = $includeDir && -d $includeDir;
+    my $haveLib = $libDir     && -d $libDir;
+
+    # Validate that pkglibdir actually contains libmysqlclient.so
+    if ($haveLib) {
+        my $client = File::Spec->catfile($libDir, 'libmysqlclient.so');
+        if (! -f $client) {
+            _DebugPrint("Config tool pkglibdir missing libmysqlclient.so: $libDir");
+            $haveLib = 0;
         }
     }
 
-    # If config tool paths are valid AND inside installDir, accept them
-    if ($insideInstall && $haveConfigInclude && $haveConfigLib) {
+    my $insideInstall =
+           ($haveInc && $includeDir =~ /^\Q$installDir\E/)
+        && ($haveLib && $libDir     =~ /^\Q$installDir\E/);
+
+    if ($libDir =~ m{/lib64/mysql$}) {
+        my $rpmLib = File::Spec->catdir($installDir, 'lib64');
+        if (-f File::Spec->catfile($rpmLib, 'libmysqlclient.so')) {
+            _DebugPrint("MariaDB RPM misreport detected; fixing pkglibdir");
+            $libDir = $rpmLib;
+            $haveLib = 1;
+        }
+    }
+
+    if ($insideInstall && $haveInc && $haveLib) {
         $ENV{INC} = $includeDir;
         $ENV{LIB} = $libDir;
 
-        DebugPrint("Using config tool paths:");
-        DebugPrint("  INC = $ENV{INC}");
-        DebugPrint("  LIB = $ENV{LIB}");
+        _DebugPrint("Using config tool paths:");
+        _DebugPrint("  INC = $ENV{INC}");
+        _DebugPrint("  LIB = $ENV{LIB}");
+
         return OK;
     }
 
-    DebugPrint("Config tool paths not usable; falling back to filesystem discovery");
+    _DebugPrint("Config tool paths not usable; falling back to filesystem discovery");
 
-    # Filesystem discovery
-    my $resolvedLibDir     = _FindLibDir($installDir, $libDir);
-    my $resolvedIncludeDir = _FindIncludeDir($installDir, $includeDir);
+    my $resolvedLib = _FindLibDir($installDir, $libDir);
+    my $resolvedInc = _FindIncludeDir($installDir, $includeDir);
 
-    if ($resolvedLibDir && $resolvedIncludeDir) {
-        $ENV{LIB} = $resolvedLibDir;
-        $ENV{INC} = $resolvedIncludeDir;
+    if ($resolvedLib && $resolvedInc) {
+        $ENV{LIB} = $resolvedLib;
+        $ENV{INC} = $resolvedInc;
 
-        DebugPrint("Resolved from install layout:");
-        DebugPrint("  INC = $ENV{INC}");
-        DebugPrint("  LIB = $ENV{LIB}");
+        _DebugPrint("Resolved from install layout:");
+        _DebugPrint("  INC = $ENV{INC}");
+        _DebugPrint("  LIB = $ENV{LIB}");
+
         return OK;
     }
 
-    # MariaDB RPM fallback (strict)
-    my $rpmLibDir = File::Spec->catdir($installDir, 'lib64');
-    my $rpmIncDir = File::Spec->catdir($installDir, 'include', 'mysql');
+    my $rpmLib = File::Spec->catdir($installDir, 'lib64');
+    my $rpmInc = File::Spec->catdir($installDir, 'include', 'mysql');
 
-    if (-f File::Spec->catfile($rpmLibDir, 'libmysqlclient.so') &&
-        -d $rpmIncDir) {
+    if (-f File::Spec->catfile($rpmLib, 'libmysqlclient.so') &&
+        -d $rpmInc) {
 
-        DebugPrint("RPM-style MariaDB layout detected (strict fallback)");
-        $ENV{LIB} = $rpmLibDir;
-        $ENV{INC} = $rpmIncDir;
+        _DebugPrint("RPM-style MariaDB fallback");
+        $ENV{LIB} = $rpmLib;
+        $ENV{INC} = $rpmInc;
 
-        DebugPrint("  INC = $ENV{INC}");
-        DebugPrint("  LIB = $ENV{LIB}");
+        _DebugPrint("  INC = $ENV{INC}");
+        _DebugPrint("  LIB = $ENV{LIB}");
+
         return OK;
     }
 
-    # Fail fast — do NOT build without valid include/lib
-    DebugPrint("ERROR: Unable to resolve usable MySQL/MariaDB include and lib directories.");
-    DebugPrint("  Config tool include dir = '$includeDir'");
-    DebugPrint("  Config tool lib dir     = '$libDir'");
-    DebugPrint("  Install dir             = '$installDir'");
+    _DebugPrint("ERROR: Unable to resolve usable MySQL/MariaDB include/lib");
+    _DebugPrint("  Config include = '$includeDir'");
+    _DebugPrint("  Config lib     = '$libDir'");
+    _DebugPrint("  Install dir    = '$installDir'");
+
     return ERROR;
 }
 
 ################################################################################
-# DebugPrint
-#
-# Purpose:
-#   Print a debug message when debug mode is enabled.
-#
-# Behavior:
-#   - Prefixes the message with the module name.
-#   - Prints only when $debug is true.
-#
-# Parameters:
-#   $_[0] - Message to print.
-#
-# Returns:
-#   Nothing.
-################################################################################
-sub DebugPrint {
-    print "$name $_[0]\n" if $debug;
-}
-
-################################################################################
-# Remove
-#
-# Purpose:
-#   Delete a file if it exists.
-#
-# Behavior:
-#   - Checks for file existence.
-#   - Logs the unlink action when debug mode is enabled.
-#   - Removes the file.
-#
-# Parameters:
-#   $file - Path to the file to remove.
-#
-# Returns:
-#   Nothing.
-################################################################################
-sub Remove {
-    my ($file) = @_;
-    if (-e $file) {
-        DebugPrint("unlink($file)");
-        unlink $file;
-    }
-}
-
-################################################################################
-# Subroutine: _FindLibDir
+# _FindLibDir
 #
 # PURPOSE:
-#     Locate the correct MySQL-family client library directory under a
-#     normalized install tree. Prefers deterministic filesystem discovery.
+#     Determine the correct MySQL-family client library directory under a
+#     normalized install tree. Uses deterministic filesystem discovery and
+#     limited tail rebasing when config-tool output points outside install_dir.
 #
 # BEHAVIOR:
 #     - Checks a fixed, ordered list of candidate directories:
@@ -601,12 +667,20 @@ sub Remove {
 #           installDir/lib64
 #           installDir/lib
 #     - Returns the first existing directory.
-#     - If no candidate exists and configLibDir is outside installDir, attempts
-#       to rebase known MySQL-family tail structures (lib64/mysql or lib/mysql).
+#     - If no candidate matches and configLibDir is outside install_dir:
+#           * Splits configLibDir into path components.
+#           * Rebases known MySQL-family tail patterns:
+#                 lib64/mysql
+#                 lib/mysql
+#           * Returns the rebased directory if it exists.
+#     - Returns undef if no usable directory is found.
 #
-# PARAMETERS:
-#     $installDir     - Root installation directory.
-#     $configLibDir   - Library directory reported by the config tool.
+# INPUTS:
+#     $installDir
+#         Root directory of the normalized MySQL-family installation.
+#
+#     $configLibDir
+#         Library directory reported by the vendor config tool.
 #
 # RETURNS:
 #     Directory path on success.
@@ -614,7 +688,7 @@ sub Remove {
 #
 # NOTES:
 #     - This routine is MySQL-family specific.
-#     - No guessing beyond explicit tail patterns.
+#     - No guessing beyond explicit, known tail patterns.
 ################################################################################
 sub _FindLibDir {
     my ($installDir, $configLibDir) = @_;
@@ -630,15 +704,12 @@ sub _FindLibDir {
         return $dir if -d $dir;
     }
 
-    # Fallback: if configLibDir exists but is outside, try to see if
-    # there is a structurally similar path under installDir
     if ($configLibDir && $configLibDir !~ /^\Q$installDir\E/) {
         my @parts = File::Spec->splitdir($configLibDir);
-        while (@parts && $parts[0] eq '') {
-            shift @parts;
-        }
-        # Look for 'lib64/mysql' or 'lib/mysql' in the tail
+        shift @parts while @parts && $parts[0] eq '';
+
         my $tail = join('/', @parts[-2 .. $#parts]) if @parts >= 2;
+
         if ($tail && ($tail eq 'lib64/mysql' || $tail eq 'lib/mysql')) {
             my $rebased = File::Spec->catdir($installDir, split('/', $tail));
             return $rebased if -d $rebased;
@@ -649,11 +720,12 @@ sub _FindLibDir {
 }
 
 ################################################################################
-# Subroutine: _FindIncludeDir
+# _FindIncludeDir
 #
 # PURPOSE:
-#     Locate the correct MySQL-family client include directory under a
-#     normalized install tree. Prefers deterministic filesystem discovery.
+#     Determine the correct MySQL-family client include directory under a
+#     normalized install tree. Uses deterministic filesystem discovery and
+#     limited tail rebasing when config-tool output points outside install_dir.
 #
 # BEHAVIOR:
 #     - Checks a fixed, ordered list of candidate directories:
@@ -662,12 +734,20 @@ sub _FindLibDir {
 #           installDir/usr/include/mysql
 #           installDir/usr/include
 #     - Validates that mysql.h exists in the directory.
-#     - If no candidate matches and configIncludeDir is outside installDir,
-#       attempts to rebase known MySQL-family tail structures.
+#     - If no candidate matches and configIncludeDir is outside install_dir:
+#           * Splits configIncludeDir into path components.
+#           * Rebases known MySQL-family tail patterns:
+#                 include/mysql
+#                 include
+#           * Returns the rebased directory if it exists and contains mysql.h.
+#     - Returns undef if no usable directory is found.
 #
-# PARAMETERS:
-#     $installDir        - Root installation directory.
-#     $configIncludeDir  - Include directory reported by the config tool.
+# INPUTS:
+#     $installDir
+#         Root directory of the normalized MySQL-family installation.
+#
+#     $configIncludeDir
+#         Include directory reported by the vendor config tool.
 #
 # RETURNS:
 #     Directory path on success.
@@ -675,7 +755,7 @@ sub _FindLibDir {
 #
 # NOTES:
 #     - This routine is MySQL-family specific.
-#     - No guessing beyond explicit tail patterns.
+#     - No guessing beyond explicit, known tail patterns.
 ################################################################################
 sub _FindIncludeDir {
     my ($installDir, $configIncludeDir) = @_;
@@ -688,17 +768,15 @@ sub _FindIncludeDir {
     );
 
     for my $dir (@candidates) {
-        # Make sure it actually looks like a MySQL include dir
         return $dir if -d $dir && -f File::Spec->catfile($dir, 'mysql.h');
     }
 
-    # Fallback: try rebasing configIncludeDir under installDir if it has a tail like 'include/mysql'
     if ($configIncludeDir && $configIncludeDir !~ /^\Q$installDir\E/) {
         my @parts = File::Spec->splitdir($configIncludeDir);
-        while (@parts && $parts[0] eq '') {
-            shift @parts;
-        }
+        shift @parts while @parts && $parts[0] eq '';
+
         my $tail = join('/', @parts[-2 .. $#parts]) if @parts >= 2;
+
         if ($tail && ($tail eq 'include/mysql' || $tail eq 'include')) {
             my $rebased = File::Spec->catdir($installDir, split('/', $tail));
             return $rebased if -d $rebased && -f File::Spec->catfile($rebased, 'mysql.h');
@@ -706,6 +784,136 @@ sub _FindIncludeDir {
     }
 
     return undef;
+}
+
+################################################################################
+# _AppendMySQLCMakeFlags
+#
+# PURPOSE:
+#     Append deterministic MySQL‑family CMake flags to cmakeArgs using the
+#     include and library paths previously resolved and exported to the
+#     environment. Also detects libmysqlclient.so and provides its absolute
+#     path to CMake when available.
+#
+# BEHAVIOR:
+#     - Appends generic CMake include and library path flags:
+#           -DCMAKE_INCLUDE_PATH
+#           -DCMAKE_LIBRARY_PATH
+#     - Appends MySQL‑specific flags:
+#           -DMYSQL_INCLUDE_DIR
+#           -DMYSQL_LIB_DIR
+#     - Scans $ENV{LIB} for libmysqlclient.so* files.
+#     - Selects the first usable shared library (skips .a archives and
+#       pkgconfig directories).
+#     - If found:
+#           * Appends LIBMYSQL_INCLUDE_DIR and LIBMYSQL_LIB flags.
+#           * Emits debug output identifying the resolved library.
+#     - If not found:
+#           * Emits a warning but does not fail; some builds may not require
+#             libmysqlclient.so directly.
+#
+# INPUTS:
+#     None
+#         Uses $ENV{INC}, $ENV{LIB}, and global $cmakeArgs.
+#
+# RETURNS:
+#     Nothing
+#         Modifies $cmakeArgs in place.
+#
+# NOTES:
+#     - This routine assumes INC and LIB have already been validated.
+#     - Behavior is deterministic and fail‑fast except for the optional
+#       libmysqlclient.so discovery step.
+################################################################################
+sub _AppendMySQLCMakeFlags {
+
+    _DebugPrint("AppendMySQLCMakeFlags");
+    
+    $cmakeArgs .= " -DWITH_MYSQL=ON -DWITH_PGSQL=OFF";
+    $cmakeArgs .= " -DCMAKE_INCLUDE_PATH='$ENV{INC}'";
+    $cmakeArgs .= " -DCMAKE_LIBRARY_PATH='$ENV{LIB}'";
+    $cmakeArgs .= " -DMYSQL_INCLUDE_DIR='$ENV{INC}'";
+    $cmakeArgs .= " -DMYSQL_LIB_DIR='$ENV{LIB}'";
+
+    my @candidates = glob(File::Spec->catfile($ENV{LIB}, 'libmysqlclient.so*'));
+    my $libmysql;
+
+    for my $cand (@candidates) {
+        next if $cand =~ /\.a$/;
+        next if $cand =~ /pkgconfig/;
+        if (-f $cand) {
+            $libmysql = $cand;
+            last;
+        }
+    }
+
+    if ($libmysql) {
+        _DebugPrint("Resolved libmysqlclient = $libmysql");
+        $cmakeArgs .= " -DLIBMYSQL_INCLUDE_DIR='$ENV{INC}'";
+        $cmakeArgs .= " -DLIBMYSQL_LIB='$libmysql'";
+        return;
+    }
+
+    _DebugPrint("WARNING: No usable libmysqlclient.so found under $ENV{LIB}");
+}
+
+################################################################################
+############################ Utilities Subs ####################################
+################################################################################
+
+################################################################################
+# _SetupBuild
+#
+# PURPOSE:
+#     Dispatch build‑setup logic based on the detected database maker.
+#     Selects and invokes the correct environment‑configuration routine for
+#     PostgreSQL or MySQL‑family client builds. Enforces strict fail‑fast
+#     behavior for unsupported or unknown makers.
+#
+# BEHAVIOR:
+#     - Uses maker flags set by _DetectMakerFromInstallDir().
+#     - Calls _SetupForPGBuild() when PostgreSQL is detected.
+#     - Calls _SetupForMariaDBFamilyBuild() when MySQL, MariaDB, or Percona
+#       is detected.
+#     - Rejects Oracle explicitly; this module does not support Oracle client
+#       builds.
+#     - Rejects any unknown maker to preserve deterministic behavior.
+#
+# INPUTS:
+#     $installDir
+#         Root directory of the normalized client installation.
+#
+# RETURNS:
+#     OK
+#         Environment setup completed successfully for the detected maker.
+#
+#     ERROR
+#         Maker unsupported, unknown, or setup routine failed.
+#
+# NOTES:
+#     - This routine relies entirely on maker flags set earlier; it performs
+#       no detection itself.
+#     - Behavior is strict and fail‑fast; no silent fallback paths.
+################################################################################
+sub _SetupBuild {
+    my ($installDir) = @_;
+
+    if ($isPG) {
+        return ERROR if _SetupForPGBuild($installDir) != OK;
+    }
+    elsif ($isMariaDBFamily) {
+        return ERROR if _SetupForMariaDBFamilyBuild($installDir) != OK;
+    }
+    elsif ($isOracle) {
+        _DebugPrint("ERROR: Oracle client builds are not supported by this module");
+        return ERROR;
+    }
+    else {
+        _DebugPrint("ERROR: Unknown maker, we should not have gotten here!");
+        return ERROR;
+    }
+
+    return OK;
 }
 
 ################################################################################
@@ -734,89 +942,89 @@ sub _FindIncludeDir {
 sub _DetectMakerFromInstallDir {
     my ($installDir) = @_;
 
-    # Normalize once for matching
     my $path = lc($installDir // '');
 
-    # Ordered by specificity / expected usage
-    my @makers = qw(
-        mariadb
-        mysql
-        percona
-        postgresql
-        postgres
-        oracle
-    );
+    # Reset flags
+    $isMariaDBFamily = 0;
+    $isPG            = 0;
+    $isOracle        = 0;
 
+    # Scan for known makers
     for my $maker (@makers) {
-        return $maker if $path =~ m{/\Q$maker\E[^/]*}i;
-    }
+        if ($path =~ m{/\Q$maker\E[^/]*}i) {
 
-    # Fallback: probe for pg_config to detect system-package PostgreSQL (e.g. /usr)
-    my $pg_config = File::Spec->catfile($installDir, 'bin', 'pg_config');
-    return 'postgres' if -x $pg_config;
+            # Set flags once, bail immediately
+            if ($maker eq 'mariadb' || $maker eq 'mysql' || $maker eq 'percona') {
+                $isMariaDBFamily = 1;
+            }
+            elsif ($maker eq 'postgresql' || $maker eq 'postgres') {
+                $isPG = 1;
+            }
+            elsif ($maker eq 'oracle') {
+                $isOracle = 1;
+            }
 
-    return undef;
-}
-
-#-------------------------------------------------------------------------------
-# Subroutine: _SetLibAndInclude_PostgreSQL
-#
-# PURPOSE:
-#     Resolve include and library directories for PostgreSQL client builds
-#     using pg_config. Sets $ENV{INC} and $ENV{LIB} for use by cmake.
-#
-# PARAMETERS:
-#     $installDir  - Root of the PostgreSQL installation.
-#
-# RETURNS:
-#     OK    - INC and LIB resolved via pg_config.
-#     ERROR - pg_config not found or returned invalid paths.
-#-------------------------------------------------------------------------------
-sub _SetLibAndInclude_PostgreSQL {
-    my ($installDir) = @_;
-
-    DebugPrint("SetLibAndInclude - PostgreSQL family");
-
-    # Locate pg_config: first under installDir, then system-wide
-    my $pgConfig;
-    for my $candidate (
-        File::Spec->catfile($installDir, 'bin', 'pg_config'),
-        '/usr/bin/pg_config',
-    ) {
-        if (-x $candidate) {
-            $pgConfig = $candidate;
-            last;
+            return $maker;   # DONE — bail out immediately
         }
     }
 
-    unless ($pgConfig) {
-        DebugPrint("ERROR: pg_config not found under $installDir/bin or /usr/bin");
-        return ERROR;
+    # Fallback for PG detection
+    for my $candidate (
+        File::Spec->catfile($installDir, 'bin', 'pg_config'),
+        File::Spec->catfile($installDir, 'usr', 'bin', 'pg_config'),
+    ) {
+        if (-x $candidate) {
+            $isPG = 1;
+            return 'postgres';
+        }
     }
 
-    DebugPrint("pg_config = $pgConfig");
+    return undef;  # Build() will throw the error
+}
 
-    my $includeDir = `$pgConfig --includedir 2>/dev/null`;
-    my $libDir     = `$pgConfig --libdir 2>/dev/null`;
-    chomp($includeDir);
-    chomp($libDir);
+################################################################################
+# _DebugPrint
+#
+# Purpose:
+#   Print a debug message when debug mode is enabled.
+#
+# Behavior:
+#   - Prefixes the message with the module name.
+#   - Prints only when $debug is true.
+#
+# Parameters:
+#   $_[0] - Message to print.
+#
+# Returns:
+#   Nothing.
+################################################################################
+sub _DebugPrint {
+    print "$name $_[0]\n" if $debug;
+}
 
-    unless ($includeDir && -d $includeDir) {
-        DebugPrint("ERROR: pg_config --includedir returned invalid directory: '$includeDir'");
-        return ERROR;
+################################################################################
+# _Remove
+#
+# Purpose:
+#   Delete a file if it exists.
+#
+# Behavior:
+#   - Checks for file existence.
+#   - Logs the unlink action when debug mode is enabled.
+#   - Removes the file.
+#
+# Parameters:
+#   $file - Path to the file to remove.
+#
+# Returns:
+#   Nothing.
+################################################################################
+sub _Remove {
+    my ($file) = @_;
+    if (-e $file) {
+        _DebugPrint("unlink($file)");
+        unlink $file;
     }
-    unless ($libDir && -d $libDir) {
-        DebugPrint("ERROR: pg_config --libdir returned invalid directory: '$libDir'");
-        return ERROR;
-    }
-
-    $ENV{INC} = $includeDir;
-    $ENV{LIB} = $libDir;
-
-    DebugPrint("PostgreSQL INC = $includeDir");
-    DebugPrint("PostgreSQL LIB = $libDir");
-
-    return OK;
 }
 
 #############################################################################
