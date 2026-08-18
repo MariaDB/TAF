@@ -4,6 +4,7 @@ package sql_libs::Executor;
 #
 # Created: January 2026
 # Last Modified: June 2026
+# Version: 4.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
