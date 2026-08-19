@@ -1,0 +1,68 @@
+###############################################################################
+# TidesDB v10 (TideSQL 5.0.0) -- LOCAL small-scale config
+#
+# Sized for a workstation (roughly 16 threads, tens of GB RAM, SSD) that is
+# also doing other work, so caches and worker counts are deliberately modest.
+# Paired with innodb_compare_local.cnf for a fair two-way sysbench comparison.
+# Select with taf.db_config_file and set taf.db_engine=TidesDB.
+###############################################################################
+
+[mysqld]
+performance_schema=OFF
+disable-log-bin
+sync_binlog=0
+general_log=OFF
+slow_query_log=OFF
+default_storage_engine=TidesDB
+character_set_server=utf8mb4
+collation_server=utf8mb4_general_ci
+max_connections=300
+max_prepared_stmt_count=1000000
+open_files_limit=65535
+table_open_cache=2000
+thread_cache_size=64
+transaction_isolation=READ-COMMITTED
+
+tmp_table_size=32M
+max_heap_table_size=32M
+
+# The mysql.* system tables stay on InnoDB. A small pool is plenty locally.
+innodb_buffer_pool_size=512M
+
+plugin_maturity=unknown
+plugin_load_add=ha_tidesdb.so
+
+# Read cache. 4G locally, matched to the InnoDB pool in the paired config.
+tidesdb_block_cache_size=4G
+
+# Shared memtable write buffer, and the WAL sync mode. NONE keeps commits off
+# the per-commit device fsync path; the paired InnoDB config uses
+# innodb_flush_log_at_trx_commit=2 for the same "survive a process crash, not a
+# power cut" durability so the two engines are compared on equal footing.
+tidesdb_memtable_write_buffer_size=64M
+tidesdb_memtable_sync_mode=NONE
+
+tidesdb_default_compression=NONE
+
+# Modest worker pools so sysbench (same host) keeps most of the cores.
+tidesdb_flush_threads=4
+tidesdb_compaction_threads=2
+
+tidesdb_max_open_sstables=0
+
+# Left OFF for a like-for-like run: InnoDB enforces uniqueness, so TidesDB
+# should too. Set ON only to isolate raw write throughput.
+# tidesdb_skip_unique_check=ON
+
+tidesdb_log_level=NONE
+
+tidesdb_default_bloom_fpr=10
+tidesdb_default_tombstone_density_trigger=5000
+tidesdb_default_tombstone_density_min_entries=2048
+
+[client]
+default-character-set=utf8mb4
+
+[mysqldump]
+quick
+max_allowed_packet=64M
