@@ -664,6 +664,13 @@ sub CheckTestSetup {
         if($dbMode eq "restore" && !$restoreCreated){
            PrintVerbose("Database restore requested, creating restore image...");
            return ERROR if _CreateRestoreImage($ctx) != OK;
+           # Restore immediately after creating the image so iteration 1 runs
+           # on the same freshly-restored datadir as every later iteration;
+           # a natively-filled datadir and a restored copy differ in physical
+           # state (storage cache warmth, file layout) and skew results.
+           PrintVerbose("Restoring image so iteration 1 runs on a restored datadir.");
+           $state->{first_time_in_tests_loop} = FALSE;
+           return _RestoreImage($ctx);
         }
     }
 
@@ -2627,6 +2634,13 @@ sub _RestoreImage {
         PrintError("Restore failed for format: $fmt");
         return ERROR;
     }
+
+    #
+    # Flush the page cache so writeback from the restored datadir completes
+    # while the database is still stopped; otherwise it competes with the
+    # test's I/O after startup.
+    #
+    system("sync");
 
     #
     # Start backend after restore
