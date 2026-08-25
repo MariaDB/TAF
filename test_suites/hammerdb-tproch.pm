@@ -1397,6 +1397,12 @@ sub CreateTprochConfigFile {
         or return PrintError("$_wc Cannot write $config_path");
 
     my $db_type = lc($tsOpt{db_type} // '');
+    # HammerDB's dbset/diset prefix for postgres is "pg", not "postgres"
+    # (see client_source/hammerdb/HammerDB-6.0/config/database.xml and
+    # config/postgresql.xml, which use pg_host/pg_port/pg_sslmode/...).
+    # GetTprochDriverKeys() below already expects 'pg' -- remap here so
+    # every dbset/diset line emitted by this function agrees.
+    $db_type = 'pg' if $db_type eq 'postgres';
 
     #---------------------------------------------------------------------
     # Header
@@ -1433,7 +1439,7 @@ sub CreateTprochConfigFile {
                 if $options{db_ssl_cipher};
         }
 
-        elsif ($db_type eq 'postgres') {
+        elsif ($db_type eq 'pg') {
             print $fh "diset connection ${db_type}_sslmode $options{db_ssl_mode}\n";
             print $fh "diset connection ${db_type}_sslrootcert $options{db_ssl_ca}\n"
                 if $options{db_ssl_ca};
@@ -1744,6 +1750,12 @@ sub GetTprochDriverKeys {
     }
     elsif ($db_type eq 'pg') {
         %map = (
+            # Without these, HammerDB falls back to its own default
+            # pg_tpch_superuser/pg_tpch_superuserpass ("postgres"/"postgres"),
+            # which does not match TAF's configured root password and makes
+            # the schema-build Monitor VU fail authentication.
+            'tpch pg_tpch_superuser'         => $options{db_root_user},
+            'tpch pg_tpch_superuserpass'     => $options{db_root_pass},
             'tpch pg_tpch_user'              => $options{db_user},
             'tpch pg_tpch_pass'              => $options{db_user_pass},
             'tpch pg_tpch_dbase'             => $options{db_name} // 'tproch',

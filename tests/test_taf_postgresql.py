@@ -439,6 +439,62 @@ class TestL1Static:
         assert len(props) >= 2, \
             f"Expected ≥2 .properties files, found {len(props)}: {props}"
 
+    def test_hammerdb_agent_matches_client_executable_version(self):
+        """hammerdb_*.agent must reference the same HammerDB-X.Y tree as client_executable.
+
+        Regression guard: client_executable was bumped to HammerDB-6.0 while
+        .agent still pointed at HammerDB-5.0 (a stale agent/CLI version pair
+        can silently break the metrics agent handshake).
+        """
+        for suite in ("hammerdb_tprocc", "hammerdb_tproch"):
+            defaults = (TAF_ROOT / "properties" / "default" /
+                        f"{suite}_default.properties").read_text()
+            client = re.search(rf"{suite}\.client_executable\s*=\s*(\S+)", defaults)
+            agent = re.search(rf"{suite}\.agent\s*=\s*(\S+)", defaults)
+            assert client and agent, f"Missing client_executable/agent in {suite}_default.properties"
+            client_ver = re.search(r"HammerDB-[\d.]+", client.group(1))
+            agent_ver = re.search(r"HammerDB-[\d.]+", agent.group(1))
+            assert client_ver and agent_ver, "Could not extract HammerDB version from paths"
+            assert client_ver.group(0) == agent_ver.group(0), (
+                f"{suite}: client_executable uses {client_ver.group(0)} but "
+                f"agent uses {agent_ver.group(0)}"
+            )
+
+    def test_pgsql_example_properties_use_real_keys(self):
+        """hammerdb_tprocc_pgsql.properties must use property keys that hammerdb-tprocc.pm
+        actually reads (number_of_warehouses, global taf.threads/taf.duration) —
+        not made-up keys (warehouses, def_threads, def_duration, rampup) that are
+        silently ignored and fall back to defaults.
+        """
+        content = (TAF_ROOT / "properties" / "postgresql" /
+                   "hammerdb_tprocc_pgsql.properties").read_text()
+        for bogus in ("hammerdb_tprocc.warehouses ", "hammerdb_tprocc.def_threads",
+                      "hammerdb_tprocc.def_duration", "hammerdb_tprocc.rampup"):
+            assert bogus not in content, \
+                f"Found bogus/no-op property '{bogus.strip()}' in hammerdb_tprocc_pgsql.properties"
+        assert "hammerdb_tprocc.number_of_warehouses" in content
+        assert re.search(r"^taf\.threads\s*=", content, re.MULTILINE)
+        assert re.search(r"^taf\.duration\s*=", content, re.MULTILINE)
+
+    def test_hammerdb_tproch_pgsql_properties_exists(self):
+        """A PostgreSQL example properties file for TPROC-H must exist.
+
+        TPROC-H had pg_tproch_* Tcl scripts wired in client_source/hammerdb
+        but, unlike TPROC-C, no example properties file and no test coverage
+        before this was added.
+        """
+        props = TAF_ROOT / "properties" / "postgresql" / "hammerdb_tproch_pgsql.properties"
+        assert props.is_file(), f"Missing: {props}"
+        content = props.read_text()
+        assert "hammerdb_tproch.db_type" in content and "postgres" in content
+
+    def test_hammerdb_tproch_pm_has_postgres_wiring(self):
+        """hammerdb-tproch.pm must have postgres-specific connection config,
+        matching the pg_tproch_* Tcl scripts vendored in client_source."""
+        content = (TAF_ROOT / "test_suites" / "hammerdb-tproch.pm").read_text()
+        assert "eq 'postgres'" in content or 'eq "postgres"' in content, \
+            "hammerdb-tproch.pm has no postgres-specific branch"
+
 
 # ===========================================================================
 # LAYER 2 — Plugin unit test (via Perl subprocess)
@@ -975,3 +1031,222 @@ class TestL6MariaDBRegression:
             + "\n".join(fails)
             + f"\nFull output:\n{output}"
         )
+
+
+# ===========================================================================
+# LAYER 7 — Full sysbench-lua test-type sweep against PostgreSQL
+#
+# L5 only exercises OLTP_RO + POINT_SELECT. sysbench-lua.pm defines >40
+# named test types; L7 sweeps the core, driver-agnostic sysbench-lua
+# workloads (excluding BMK_*, which requires the separate BMK client tool,
+# and the TidesDB storage-engine-comparison workloads, which are orthogonal
+# to db_driver) in a single TAF run against PostgreSQL.
+# ===========================================================================
+
+SYSBENCH_CORE_TESTS = [
+    "OLTP_RO", "OLTP_RW", "OLTP_WO_MODIFIABLE",
+    "POINT_SELECT", "POINT_SELECT_MODIFIABLE",
+    "SELECT_SIMPLE_RANGES", "SELECT_SUM_RANGES",
+    "SELECT_ORDER_RANGES", "SELECT_DISTINCT_RANGES",
+    "UPDATE_KEY", "UPDATE_NO_KEY",
+    "INSERT", "DELETE", "OLTP_INSERT_INTO",
+    "TPCB_KEY", "TPCB_NO_KEY",
+    "OLTP_RW_MODIFIABLE",
+]
+
+
+@pytest.fixture(scope="session")
+def sysbench_matrix_result(tmp_path_factory):
+    """L7 fixture: runs every test in SYSBENCH_CORE_TESTS against PostgreSQL
+    in a single TAF invocation (one DB lifecycle, one sysbench binary).
+    """
+    _shutdown_pg_if_running()
+
+    tmp = tmp_path_factory.mktemp("taf_l7")
+    props_file = tmp / "sysbench_matrix.properties"
+
+    write_props(props_file, {
+        "taf.action":                     "init-start-db-run-tests",
+        "taf.taf_db_makers_plugin":       "postgres",
+        "taf.db_software_install_dir":    str(PG_INSTALL),
+        "taf.db_port":                    str(PG_PORT),
+        "taf.db_user":                    TAF_PG_USER,
+        "taf.db_user_pass":               TAF_PG_PASS,
+        "taf.db_root_user":               TAF_PG_ROOT,
+        "taf.db_root_pass":               TAF_PG_ROOT_PASS,
+        "taf.database":                   TAF_PG_DB,
+        "taf.test_suite":                 "sysbench-lua",
+        "taf.tests":                      ",".join(SYSBENCH_CORE_TESTS),
+        "taf.threads":                    "4",
+        "taf.duration":                   "10",
+        "taf.verbose":                    "true",
+        "sysbench_lua.db_driver":         "pgsql",
+        "sysbench_lua.connector":         "libpq",
+        "sysbench_lua.number_of_tables":  "1",
+        "sysbench_lua.number_of_rows":    "10000",
+        "sysbench_lua.oltp_skip_trx":     "off",
+    })
+
+    result = taf_propfile(props_file, timeout=1800)
+
+    yield result
+
+    _shutdown_pg_if_running()
+
+
+class TestL7SysbenchMatrix:
+    """Verifies the full curated sweep of sysbench-lua test types against PostgreSQL."""
+
+    def test_matrix_run_exits_cleanly(self, sysbench_matrix_result):
+        result = sysbench_matrix_result
+        assert result.returncode == 0, (
+            f"Sysbench test-type sweep failed (rc={result.returncode})\n"
+            f"STDOUT:\n{result.stdout[-6000:]}\nSTDERR:\n{result.stderr[-1500:]}"
+        )
+
+    def test_matrix_output_has_no_errors(self, sysbench_matrix_result):
+        output = sysbench_matrix_result.stdout + sysbench_matrix_result.stderr
+        clean, bad_line = has_no_errors(output)
+        assert clean, f"ERROR line found in sweep output:\n  {bad_line}"
+
+    @pytest.mark.parametrize("test_name", SYSBENCH_CORE_TESTS)
+    def test_each_test_type_produced_results(self, sysbench_matrix_result, test_name):
+        """Every test type in the sweep must produce a non-error results entry."""
+        found = False
+        for search_root in (TAF_ROOT / "results", TAF_ROOT / "archive"):
+            if not search_root.is_dir():
+                continue
+            for entry in search_root.iterdir():
+                if entry.is_dir() and test_name in entry.name and not entry.name.startswith("Error_"):
+                    found = True
+        assert found, f"No results directory found for test type {test_name}"
+
+
+# ===========================================================================
+# LAYER 8 — HammerDB TPROC-C against PostgreSQL
+#
+# TPROC-C has full postgres wiring (WriteTproccPostgresConfig) and an
+# example properties file, but — unlike sysbench-lua — had no automated
+# end-to-end test before this layer was added.
+# ===========================================================================
+
+@pytest.fixture(scope="session")
+def hammerdb_tprocc_pg_result(tmp_path_factory):
+    """L8 fixture: short HammerDB TPC-C smoke run against PostgreSQL."""
+    _shutdown_pg_if_running()
+
+    tmp = tmp_path_factory.mktemp("taf_l8")
+    props_file = tmp / "hammerdb_tprocc_pg.properties"
+
+    write_props(props_file, {
+        "taf.action":                        "init-start-db-run-tests",
+        "taf.taf_db_makers_plugin":           "postgres",
+        "taf.db_software_install_dir":        str(PG_INSTALL),
+        "taf.db_port":                        str(PG_PORT),
+        "taf.db_user":                        TAF_PG_USER,
+        "taf.db_user_pass":                   TAF_PG_PASS,
+        "taf.db_root_user":                   TAF_PG_ROOT,
+        "taf.db_root_pass":                   TAF_PG_ROOT_PASS,
+        "taf.database":                       TAF_PG_DB,
+        "taf.test_suite":                     "hammerdb-tprocc",
+        "taf.tests":                          "tprocc",
+        "taf.threads":                        "2",
+        # HammerDB TPROC-C reads taf.duration/taf.warmup_duration in MINUTES
+        # (sysbench-lua uses seconds instead -- see help/taf_usage.txt).
+        "taf.duration":                       "1",
+        "taf.warmup_duration":                "1",
+        "taf.verbose":                        "true",
+        "hammerdb_tprocc.db_type":            "postgres",
+        "hammerdb_tprocc.number_of_warehouses": "2",
+    })
+
+    result = taf_propfile(props_file, timeout=1200)
+
+    yield result
+
+    _shutdown_pg_if_running()
+
+
+class TestL8HammerdbTprocc:
+    """End-to-end smoke test: HammerDB TPC-C against PostgreSQL."""
+
+    @needs_pg
+    def test_tprocc_exits_cleanly(self, hammerdb_tprocc_pg_result):
+        result = hammerdb_tprocc_pg_result
+        assert result.returncode == 0, (
+            f"HammerDB TPC-C/PostgreSQL run failed (rc={result.returncode})\n"
+            f"STDOUT:\n{result.stdout[-6000:]}\nSTDERR:\n{result.stderr[-1500:]}"
+        )
+
+    @needs_pg
+    def test_tprocc_output_has_no_errors(self, hammerdb_tprocc_pg_result):
+        output = hammerdb_tprocc_pg_result.stdout + hammerdb_tprocc_pg_result.stderr
+        clean, bad_line = has_no_errors(output)
+        assert clean, f"ERROR line found in TPC-C output:\n  {bad_line}"
+
+    @needs_pg
+    def test_tprocc_dbset_postgres(self, hammerdb_tprocc_pg_result):
+        """The generated TCL config must select 'dbset db pg' (HammerDB's postgres id)."""
+        output = hammerdb_tprocc_pg_result.stdout + hammerdb_tprocc_pg_result.stderr
+        assert "postgres" in output.lower(), \
+            "No mention of postgres in HammerDB TPC-C run output"
+
+
+# ===========================================================================
+# LAYER 9 — HammerDB TPROC-H against PostgreSQL
+#
+# Unlike TPROC-C, TPROC-H's postgres wiring (pg_tproch_* Tcl scripts,
+# ${db_type}_sslmode config in hammerdb-tproch.pm) had never been exercised
+# end-to-end nor had an example properties file before this layer.
+# ===========================================================================
+
+@pytest.fixture(scope="session")
+def hammerdb_tproch_pg_result(tmp_path_factory):
+    """L9 fixture: short HammerDB TPROC-H smoke run against PostgreSQL."""
+    _shutdown_pg_if_running()
+
+    tmp = tmp_path_factory.mktemp("taf_l9")
+    props_file = tmp / "hammerdb_tproch_pg.properties"
+
+    write_props(props_file, {
+        "taf.action":                     "init-start-db-run-tests",
+        "taf.taf_db_makers_plugin":        "postgres",
+        "taf.db_software_install_dir":     str(PG_INSTALL),
+        "taf.db_port":                     str(PG_PORT),
+        "taf.db_user":                     TAF_PG_USER,
+        "taf.db_user_pass":                TAF_PG_PASS,
+        "taf.db_root_user":                TAF_PG_ROOT,
+        "taf.db_root_pass":                TAF_PG_ROOT_PASS,
+        "taf.database":                    TAF_PG_DB,
+        "taf.test_suite":                  "hammerdb-tproch",
+        "taf.tests":                       "TPROCH",
+        "taf.threads":                     "1",
+        "taf.verbose":                     "true",
+        "hammerdb_tproch.db_type":         "postgres",
+        "hammerdb_tproch.scale":           "1",
+        "hammerdb_tproch.total_querysets": "1",
+    })
+
+    result = taf_propfile(props_file, timeout=1800)
+
+    yield result
+
+    _shutdown_pg_if_running()
+
+
+class TestL9HammerdbTproch:
+    """End-to-end smoke test: HammerDB TPROC-H against PostgreSQL (previously untested)."""
+
+    @needs_pg
+    def test_tproch_exits_cleanly(self, hammerdb_tproch_pg_result):
+        result = hammerdb_tproch_pg_result
+        assert result.returncode == 0, (
+            f"HammerDB TPROC-H/PostgreSQL run failed (rc={result.returncode})\n"
+            f"STDOUT:\n{result.stdout[-6000:]}\nSTDERR:\n{result.stderr[-1500:]}"
+        )
+
+    @needs_pg
+    def test_tproch_output_has_no_errors(self, hammerdb_tproch_pg_result):
+        output = hammerdb_tproch_pg_result.stdout + hammerdb_tproch_pg_result.stderr
+        clean, bad_line = has_no_errors(output)
+        assert clean, f"ERROR line found in TPROC-H output:\n  {bad_line}"
