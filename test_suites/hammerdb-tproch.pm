@@ -1413,12 +1413,23 @@ sub CreateTprochConfigFile {
 
     #---------------------------------------------------------------------
     # Connection dictionary (socket vs TCP)
+    #
+    # HammerDB's PostgreSQL driver has no unix-socket support at all -- it
+    # always connects over TCP, and its dictionary has no "pg_socket" key.
+    # Emitting one (as the socket branch below does for mysql/mariadb) is
+    # silently ignored, and worse, skipping "pg_port" in that branch left
+    # HammerDB falling back to its own default (5432) instead of TAF's
+    # actually configured port (e.g. 5433), causing "Connection refused"
+    # even though pg_host was correct. So for 'pg' we always take the TCP
+    # path and always set both pg_host and pg_port, regardless of
+    # db_clients_use_unix_socket.
     #---------------------------------------------------------------------
-    if ($options{db_clients_use_unix_socket}) {
+    if ($options{db_clients_use_unix_socket} && $db_type ne 'pg') {
         print $fh "diset connection ${db_type}_socket $options{db_socket}\n";
         print $fh "diset connection ${db_type}_host \"127.0.0.1\"\n";
     } else {
-        print $fh "diset connection ${db_type}_host $options{host}\n";
+        my $conn_host = ($db_type eq 'pg') ? '127.0.0.1' : $options{host};
+        print $fh "diset connection ${db_type}_host $conn_host\n";
         print $fh "diset connection ${db_type}_port $options{db_port}\n";
     }
 

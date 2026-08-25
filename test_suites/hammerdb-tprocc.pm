@@ -3792,7 +3792,16 @@ sub WriteTproccPostgresConfig {
     #---------------------------------------------------------------------
     # Connection dictionary
     #---------------------------------------------------------------------
-    print $fh "diset connection pg_host \"$options{host}\"\n";
+    # $options{host} is the *reporting* hostname (GetHostName() resolves
+    # "localhost" to the machine's real hostname for archive/result naming,
+    # e.g. "taf-clean") -- not a connection target. HammerDB's PostgreSQL
+    # dictionary has no pg_socket key (only TCP), and postgres.pm's
+    # pg_hba.conf only ever allows 127.0.0.1/::1 for a TAF-managed instance,
+    # so connecting to the resolved real hostname instead of loopback fails
+    # with "no pg_hba.conf entry for host ..." on any machine whose hostname
+    # isn't itself an alias for localhost (works by accident, not by design,
+    # wherever it happens to be).
+    print $fh "diset connection pg_host \"127.0.0.1\"\n";
     print $fh "diset connection pg_port $options{db_port}\n";
 
     # Superuser used by HammerDB's schema-build/delete Monitor VU -- without
