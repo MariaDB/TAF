@@ -255,9 +255,10 @@ def benchmark_result(tmp_path_factory):
         "sysbench_lua.oltp_skip_trx":     "off",
     })
 
+    start_time = time.time()
     result = taf_propfile(props_file, timeout=900)
 
-    yield result
+    yield result, start_time
 
     _shutdown_pg_if_running()
 
@@ -846,7 +847,7 @@ class TestL5Benchmark:
     @needs_pg
     def test_benchmark_exits_cleanly(self, benchmark_result):
         """Benchmark run must finish with exit code 0."""
-        result = benchmark_result
+        result, _ = benchmark_result
         assert result.returncode == 0, (
             f"Benchmark TAF run failed (rc={result.returncode})\n"
             f"STDOUT:\n{result.stdout[-5000:]}\n"
@@ -856,7 +857,7 @@ class TestL5Benchmark:
     @needs_pg
     def test_benchmark_output_has_no_errors(self, benchmark_result):
         """Benchmark output must not contain ERROR lines."""
-        result = benchmark_result
+        result, _ = benchmark_result
         output = result.stdout + result.stderr
         clean, bad_line = has_no_errors(output)
         assert clean, f"ERROR found in benchmark output:\n  {bad_line}"
@@ -864,7 +865,8 @@ class TestL5Benchmark:
     @needs_pg
     def test_benchmark_uses_pgsql_connection_args(self, benchmark_result):
         """TAF benchmark must call sysbench with --pgsql-host (not --mysql-host)."""
-        output = benchmark_result.stdout + benchmark_result.stderr
+        result, _ = benchmark_result
+        output = result.stdout + result.stderr
         # Verbose TAF output includes the sysbench command line
         assert "--pgsql-host" in output or "--pgsql-port" in output, (
             "sysbench was not run with --pgsql-* arguments. "
@@ -928,7 +930,16 @@ class TestL5Benchmark:
 
     @needs_pg
     def test_no_sysbench_fatal_errors(self, benchmark_result):
-        """Result files must not contain sysbench FATAL errors."""
+        """Result files must not contain sysbench FATAL errors.
+
+        archive/ and results/ accumulate every run this machine has ever
+        done, not just this fixture's -- on a repeat run they still hold
+        logs (and any FATAL lines in them) from earlier sessions. Only look
+        at files this fixture's own run could have written, or a stale
+        FATAL from a previous investigation/run fails this test forever
+        until someone manually clears the archive.
+        """
+        _, start_time = benchmark_result
         fatal_lines = []
         for search_root in (TAF_ROOT / "results", TAF_ROOT / "archive"):
             if not search_root.is_dir():
@@ -936,6 +947,8 @@ class TestL5Benchmark:
             for f in search_root.rglob("*.log"):
                 # Skip logs from known-failed archive runs
                 if "Error_" in str(f):
+                    continue
+                if f.stat().st_mtime < start_time:
                     continue
                 content = f.read_text(errors="replace")
                 for line in content.splitlines():
