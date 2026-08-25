@@ -1909,23 +1909,28 @@ sub _db_prepare_data_dir {
 
     # When running as root, hand ownership to the mysql OS user so
     # mariadb-install-db and mariadbd (both run via _os_prefix() as 'mysql')
-    # can read and write the data directory. Also chown tmpdir, since the
-    # socket, pidfile, and log-error paths mariadbd opens itself all live
-    # there (Utilities.pm defaults db_socket to "<tmp_dir>db.sock").
+    # can read and write the data directory. Also chown tmpdir AND
+    # runtime_dir: the socket, pidfile, and log-error paths mariadbd opens
+    # itself actually live under runtime_dir, not tmpdir (Utilities.pm
+    # defaults db_socket to "<db_runtime_dir>db.sock", a directory distinct
+    # from tmp_dir) -- chowning only tmpdir leaves runtime_dir root-owned,
+    # so mariadbd (running as 'mysql') fails with "Bind on unix socket:
+    # Permission denied" and aborts before ever becoming ready.
     if ($self->{is_root} && defined $self->{os_uid}) {
         chown($self->{os_uid}, $self->{os_gid}, $dir)
             or PrintWarning("_db_prepare_data_dir: chown $dir to $self->{os_user} failed: $!");
-        if ($self->{tmpdir} && -d $self->{tmpdir}) {
+        for my $shared_dir ($self->{tmpdir}, $self->{runtime_dir}) {
+            next unless $shared_dir && -d $shared_dir;
             # Recursive, not just the directory itself: unlike data_dir (wiped
-            # and recreated from scratch above), tmpdir persists across
-            # attempts, so a prior run's bootstrap/runtime pidfile or log
-            # (created before this fix existed, or by a run that failed
+            # and recreated from scratch above), tmpdir/runtime_dir persist
+            # across attempts, so a prior run's bootstrap/runtime pidfile or
+            # log (created before this fix existed, or by a run that failed
             # before reaching this chown) can already exist there owned by
             # root -- a non-recursive chown leaves those files unwritable by
             # 'mysql', and mariadbd fails outright when it can't create/write
             # its own --pid-file.
-            system('chown', '-R', "$self->{os_uid}:$self->{os_gid}", $self->{tmpdir}) == 0
-                or PrintWarning("_db_prepare_data_dir: recursive chown of tmpdir failed (exit " . ($? >> 8) . ")");
+            system('chown', '-R', "$self->{os_uid}:$self->{os_gid}", $shared_dir) == 0
+                or PrintWarning("_db_prepare_data_dir: recursive chown of $shared_dir failed (exit " . ($? >> 8) . ")");
         }
     }
 

@@ -749,8 +749,21 @@ class TestL4SysbenchBuild:
         result = run("bash", "autogen.sh", cwd=src, timeout=60)
         assert result.returncode == 0, f"autogen.sh failed:\n{result.stdout}\n{result.stderr}"
 
-        # configure --with-pgsql --without-mysql
-        result = run("bash", "configure", "--without-mysql", "--with-pgsql",
+        # configure --with-pgsql --with-mysql (both drivers in one binary):
+        # L6 (MariaDB regression) and L5/L7 (PostgreSQL) share this same
+        # sysbench binary in the same test session -- a single-driver build
+        # silently breaks whichever driver was left out ("invalid option:
+        # --mysql-socket=..." / "--pgsql-host=..."). When TAF_MARIADB_DIR
+        # points at a MariaDB install, use its bundled client headers/libs
+        # instead of relying on system mysql/mariadb-devel packages, which
+        # are not guaranteed to be installed.
+        configure_args = ["--with-mysql", "--with-pgsql"]
+        if MARIADB_DIR and Path(MARIADB_DIR).is_dir():
+            configure_args += [
+                f"--with-mysql-includes={MARIADB_DIR}/include/mysql",
+                f"--with-mysql-libs={MARIADB_DIR}/lib",
+            ]
+        result = run("bash", "configure", *configure_args,
                      cwd=src, timeout=120)
         assert result.returncode == 0, (
             f"configure failed (rc={result.returncode}):\n"
@@ -803,6 +816,90 @@ class TestL4SysbenchBuild:
             "Sysbench does not support pgsql driver — check cmake build with "
             "-DWITH_PGSQL=on and availability of libpq-devel\n"
             f"Output: {output[:500]}"
+        )
+
+    @needs_pg
+    def test_sysbench_mysql_driver_available(self):
+        """Sysbench must ALSO support --db-driver=mysql (needed by L6's MariaDB
+        regression run) -- regression guard for the single-driver
+        --without-mysql configure flag that used to silently break this.
+        """
+        sysbench_bin = TAF_ROOT / "client_source" / "sysbench-lua" / "sysbench"
+        if not sysbench_bin.is_file():
+            pytest.skip("Sysbench binary not found — run L4 build test first")
+
+        result = run(
+            str(sysbench_bin), "--db-driver=mysql", "--help",
+            timeout=15,
+        )
+        output = result.stdout + result.stderr
+        has_mysql = "--mysql-host" in output or "--mysql-socket" in output
+        assert has_mysql, (
+            "Sysbench does not support mysql driver — the L4 build must pass "
+            "--with-mysql (not --without-mysql), or L6 (MariaDB regression) "
+            "fails with 'invalid option: --mysql-socket=...'\n"
+            f"Output: {output[:500]}"
+        )
+
+    @needs_pg
+    @pytest.mark.parametrize("with_mysql,with_pgsql", [
+        (False, False),
+        (True, False),
+        (False, True),
+        (True, True),
+    ])
+    def test_sysbench_configure_driver_matrix(self, tmp_path_factory, with_mysql, with_pgsql):
+        """configure must succeed and correctly report driver support for
+        every combination of --with-mysql/--with-pgsql.
+
+        Runs against a throwaway copy of the source tree (autotools refuses
+        an out-of-tree/VPATH configure once the source itself has already
+        been configured in-tree, which the real L4 build always leaves
+        behind) so this never disturbs the actual build the rest of the
+        suite depends on. Only configure is exercised here, not make — a
+        full build per combination would roughly 4x this test's runtime for
+        marginal extra coverage; configure is where driver detection
+        actually happens.
+        """
+        import shutil
+
+        src = self.SYSBENCH_SRC
+        if not (src / "configure.ac").is_file():
+            pytest.skip(f"Sysbench source not found: {src}")
+
+        work = tmp_path_factory.mktemp("sb_matrix") / "src"
+        shutil.copytree(src, work, symlinks=True,
+                         ignore=shutil.ignore_patterns(".git"))
+
+        result = run("bash", "autogen.sh", cwd=work, timeout=60)
+        assert result.returncode == 0, f"autogen.sh failed:\n{result.stdout}\n{result.stderr}"
+
+        configure_args = [
+            "--with-mysql" if with_mysql else "--without-mysql",
+            "--with-pgsql" if with_pgsql else "--without-pgsql",
+        ]
+        if with_mysql and MARIADB_DIR and Path(MARIADB_DIR).is_dir():
+            configure_args += [
+                f"--with-mysql-includes={MARIADB_DIR}/include/mysql",
+                f"--with-mysql-libs={MARIADB_DIR}/lib",
+            ]
+
+        result = run("bash", "configure", *configure_args, cwd=work, timeout=120)
+        assert result.returncode == 0, (
+            f"configure {configure_args} failed (rc={result.returncode}):\n"
+            f"{result.stdout[-2000:]}\n{result.stderr[-500:]}"
+        )
+
+        summary = result.stdout
+        expected_mysql = "yes" if with_mysql else "no"
+        expected_pgsql = "yes" if with_pgsql else "no"
+        assert re.search(rf"MySQL support\s*:\s*{expected_mysql}\b", summary), (
+            f"configure summary does not report MySQL support = {expected_mysql} "
+            f"for {configure_args}:\n{summary[-1000:]}"
+        )
+        assert re.search(rf"PostgreSQL support\s*:\s*{expected_pgsql}\b", summary), (
+            f"configure summary does not report PostgreSQL support = {expected_pgsql} "
+            f"for {configure_args}:\n{summary[-1000:]}"
         )
 
 
@@ -931,9 +1028,15 @@ class TestL6MariaDBRegression:
         props_file = tmp / "mariadb_regression.properties"
 
         write_props(props_file, {
-            "taf.action":                  "start-db-run-tests",
+            # init-start-db-run-tests (not start-db-run-tests): this must work
+            # from a freshly-provisioned MariaDB install with no pre-existing
+            # initialized data dir -- start-db-run-tests alone assumes the
+            # system tables already exist and just hangs waiting for
+            # readiness otherwise.
+            "taf.action":                  "init-start-db-run-tests",
             "taf.taf_db_makers_plugin":    "mariadb",
             "taf.db_software_install_dir": str(mariadb_dir),
+            "taf.db_config_file":          "database_config_files/mariadb/mariadb_default.cnf",
             "taf.db_port":                 "3306",
             "taf.test_suite":              "sysbench-lua",
             "taf.tests":                   "OLTP_RO",
@@ -958,9 +1061,10 @@ class TestL6MariaDBRegression:
         props_file = tmp / "mariadb_args.properties"
 
         write_props(props_file, {
-            "taf.action":                  "start-db-run-tests",
+            "taf.action":                  "init-start-db-run-tests",
             "taf.taf_db_makers_plugin":    "mariadb",
             "taf.db_software_install_dir": str(mariadb_dir),
+            "taf.db_config_file":          "database_config_files/mariadb/mariadb_default.cnf",
             "taf.db_port":                 "3306",
             "taf.test_suite":              "sysbench-lua",
             "taf.tests":                   "OLTP_RO",
@@ -974,7 +1078,11 @@ class TestL6MariaDBRegression:
         result = taf_propfile(props_file, timeout=300)
         output = result.stdout + result.stderr
 
-        assert "--mysql-host" in output or "--mysql-port" in output, \
+        # sysbench-lua.pm defaults to a unix socket connection when available,
+        # so the actual flag is --mysql-socket, not --mysql-host/--mysql-port
+        # (TCP-only fields) -- check for any --mysql-* connection flag rather
+        # than assuming one particular connection method.
+        assert "--mysql-host" in output or "--mysql-port" in output or "--mysql-socket" in output, \
             "MariaDB run does not use --mysql-* arguments — SetConnectionArgs() may be broken"
         assert "--pgsql-host" not in output, \
             "MariaDB run incorrectly uses --pgsql-host!"
