@@ -127,9 +127,9 @@ my $isOracle        = 0;
 my @makers = qw(
     mariadb
     mysql
-    percona
     postgresql
     postgres
+    percona
     oracle
 );
 
@@ -938,6 +938,14 @@ sub _SetupBuild {
 # NOTES:
 #     - This routine performs no guessing or fuzzy matching.
 #     - Unsupported makers must be rejected by the caller.
+#     - @makers order matters: "percona" must be checked AFTER
+#       "postgresql"/"postgres". Percona ships both a MySQL/MariaDB fork
+#       and (since this repo added PostgreSQL support) a PostgreSQL
+#       distribution, and the real-world install dir name for the latter
+#       is "percona-postgresql-<ver>-...". Checking "percona" first
+#       misclassified every Percona PostgreSQL install as MariaDB-family,
+#       which then fails in _SetupForMariaDBFamilyBuild() looking for
+#       mysql.h/libmysqlclient that were never going to be there.
 ################################################################################
 sub _DetectMakerFromInstallDir {
     my ($installDir) = @_;
@@ -949,9 +957,13 @@ sub _DetectMakerFromInstallDir {
     $isPG            = 0;
     $isOracle        = 0;
 
-    # Scan for known makers
+    # Scan for known makers. The token must start a path segment or follow a
+    # "-"/"_" separator (not just "/") -- vendor-prefixed directory names
+    # like "percona-postgresql-18.4-..." put the maker token after a "-",
+    # not right after a "/", so a plain m{/\Q$maker\E} anchor never matches
+    # it at all regardless of list order.
     for my $maker (@makers) {
-        if ($path =~ m{/\Q$maker\E[^/]*}i) {
+        if ($path =~ m{(?:^|[/_-])\Q$maker\E(?:[/_-]|\d|$)}i) {
 
             # Set flags once, bail immediately
             if ($maker eq 'mariadb' || $maker eq 'mysql' || $maker eq 'percona') {
