@@ -1,2 +1,0 @@
-/usr/bin/ar qc libsbthreads.a CMakeFiles/sbthreads.dir/sb_threads.c.o
-/usr/bin/ranlib libsbthreads.a

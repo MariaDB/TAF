@@ -1,2 +1,0 @@
-/usr/bin/ar qc libsbcpu.a CMakeFiles/sbcpu.dir/sb_cpu.c.o
-/usr/bin/ranlib libsbcpu.a

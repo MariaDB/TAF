@@ -1,2 +1,0 @@
-/usr/bin/ar qc libsbfileio.a CMakeFiles/sbfileio.dir/sb_fileio.c.o CMakeFiles/sbfileio.dir/crc32.c.o
-/usr/bin/ranlib libsbfileio.a
