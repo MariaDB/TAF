@@ -170,6 +170,7 @@ sub new {
         db_start_wait  => $args{db_start_wait},
         db_stop_wait   => $args{db_stop_wait},
         tmpdir         => $args{tmp_dir},
+        runtime_dir    => $args{db_runtime_dir} // $args{tmp_dir},
 
         # Extras
         extra_args     => $args{db_extra_args},
@@ -789,11 +790,12 @@ sub _db_apply_postgresql_conf {
         print $fh "port = $self->{port}\n";
         print $fh "listen_addresses = '*'\n";
 
-        # Unix socket lives in TAF's own tmpdir, not PG's stock default
+        # Unix socket lives in TAF's db_runtime_dir, not PG's stock default
         # (/tmp) -- this is the same directory sysbench-lua.pm's
-        # SetConnectionArgs() derives (via dirname($options{db_socket}))
-        # when db_clients_use_unix_socket is set, so the two must agree.
-        my $socket_dir = $self->{tmpdir};
+        # SetConnectionArgs() derives (via dirname($options{db_socket})),
+        # since Utilities.pm defaults db_socket to db_runtime_dir/db.sock,
+        # so the two must agree.
+        my $socket_dir = $self->{runtime_dir} // $self->{tmpdir};
         $socket_dir =~ s{/+$}{};
         print $fh "unix_socket_directories = '$socket_dir'\n";
 
@@ -944,21 +946,28 @@ sub _db_prepare_data_dir {
     };
 
     # When running as root, hand ownership to the postgres OS user so initdb
-    # and pg_ctl can read and write the cluster directory. Also chown tmpdir,
-    # since the socket, pidfile, and log paths pg_ctl/postgres open themselves
-    # all live there. Recursive, not just the directory itself: unlike
-    # data_dir (wiped and recreated from scratch above), tmpdir persists
-    # across attempts, so a prior run's pidfile/log (created before this fix
-    # existed, or by a run that failed before reaching this chown) can already
-    # exist there owned by root -- a non-recursive chown leaves those files
-    # unwritable by 'postgres', and pg_ctl/postgres fail outright when they
-    # can't create/write their own runtime files.
+    # and pg_ctl can read and write the cluster directory. Also chown tmpdir
+    # and runtime_dir, since the socket, pidfile, and log paths pg_ctl/postgres
+    # open themselves live there -- and runtime_dir (db_runtime_dir) can be a
+    # directory distinct from tmpdir. Recursive, not just the directory
+    # itself: unlike data_dir (wiped and recreated from scratch above),
+    # tmpdir/runtime_dir persist across attempts, so a prior run's
+    # pidfile/log/socket (created before this fix existed, or by a run that
+    # failed before reaching this chown) can already exist there owned by
+    # root -- a non-recursive chown leaves those files unwritable by
+    # 'postgres', and pg_ctl/postgres fail outright when they can't
+    # create/write their own runtime files.
     if ($self->{is_root} && defined $self->{os_uid}) {
         chown($self->{os_uid}, $self->{os_gid}, $dir)
             or PrintWarning("_db_prepare_data_dir: chown $dir to $self->{os_user} failed: $!");
         if ($self->{tmpdir} && -d $self->{tmpdir}) {
             system('chown', '-R', "$self->{os_uid}:$self->{os_gid}", $self->{tmpdir}) == 0
                 or PrintWarning("_db_prepare_data_dir: recursive chown of tmpdir failed (exit " . ($? >> 8) . ")");
+        }
+        if ($self->{runtime_dir} && -d $self->{runtime_dir}
+                && $self->{runtime_dir} ne $self->{tmpdir}) {
+            system('chown', '-R', "$self->{os_uid}:$self->{os_gid}", $self->{runtime_dir}) == 0
+                or PrintWarning("_db_prepare_data_dir: recursive chown of runtime_dir failed (exit " . ($? >> 8) . ")");
         }
     }
 

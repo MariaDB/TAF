@@ -387,12 +387,17 @@ class TestL1Static:
             "ValidateTargetWithSuite does not normalize \\$incoming before comparison"
 
     def test_cmake_args_contains_pgsql(self):
-        """sysbench_lua_default.properties must contain -DWITH_PGSQL=on."""
-        defaults = (
-            TAF_ROOT / "properties" / "default" / "sysbench_lua_default.properties"
+        """ClientCmakeBuild.pm must inject -DWITH_PGSQL=ON when building for pgsql.
+
+        WITH_PGSQL is not a static cmake_args value in the properties file —
+        ClientCmakeBuild.pm appends it dynamically based on db_driver
+        (see the WITH_MYSQL=OFF counterpart for the mysql/mariadb branch).
+        """
+        content = (
+            TAF_ROOT / "libs" / "script_tools_lib" / "ClientCmakeBuild.pm"
         ).read_text()
-        assert "-DWITH_PGSQL=on" in defaults, \
-            "cmake_args does not contain -DWITH_PGSQL=on"
+        assert "-DWITH_PGSQL=ON" in content, \
+            "ClientCmakeBuild.pm does not inject -DWITH_PGSQL=ON for the pgsql build path"
 
     def test_postgres_sql_blocks_count(self):
         """postgres.sql must have at least 14 named blocks."""
