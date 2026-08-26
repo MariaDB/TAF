@@ -70,6 +70,27 @@ detect_pg_install() {
 }
 
 # ---------------------------------------------------------------------------
+# MariaDB installation detection (optional -- only enables L6)
+# ---------------------------------------------------------------------------
+detect_mariadb_dir() {
+    if [[ -n "${TAF_MARIADB_DIR:-}" ]]; then
+        echo "${TAF_MARIADB_DIR}"
+        return
+    fi
+
+    if [[ -f "${TAF_ROOT}/.taf_pg_env" ]]; then
+        # shellcheck source=/dev/null
+        source "${TAF_ROOT}/.taf_pg_env"
+        if [[ -n "${TAF_MARIADB_DIR:-}" ]]; then
+            echo "${TAF_MARIADB_DIR}"
+            return
+        fi
+    fi
+
+    echo ""
+}
+
+# ---------------------------------------------------------------------------
 # Prerequisites check
 # ---------------------------------------------------------------------------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -85,6 +106,13 @@ if [[ -z "$PG_INSTALL" ]]; then
 fi
 export TAF_PG_INSTALL_DIR="${PG_INSTALL}"
 export TAF_PG_PORT="${TAF_PG_PORT:-5433}"
+
+# MARIADB_DIR="$(detect_mariadb_dir)" also runs in a subshell, same as
+# PG_INSTALL above -- re-export explicitly here or TAF_MARIADB_DIR from
+# .taf_pg_env never reaches pytest and L6 silently self-skips even when
+# setup_almalinux10.sh did install MariaDB.
+MARIADB_DIR="$(detect_mariadb_dir)"
+[[ -n "${MARIADB_DIR}" ]] && export TAF_MARIADB_DIR="${MARIADB_DIR}"
 
 # Add PG's bin to PATH (for pg_config below and manual psql/pg_ctl use).
 #
