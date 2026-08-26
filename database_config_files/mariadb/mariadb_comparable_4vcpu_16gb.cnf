@@ -1,0 +1,86 @@
+# =============================================================================
+# mariadb_comparable_4vcpu_16gb.cnf - Cross-Engine-Comparable Tuning for
+# MariaDB, sized for a 4 vCPU / 16GB RAM host
+#
+# Created: July 2026 (as mariadb_minimum.cnf)
+# Renamed to mariadb_comparable.cnf: August 2026
+# Split into explicit vCPU/RAM-sized variants: August 2026
+#
+# PAIRS WITH: postgresql/postgresql_comparable_4vcpu_16gb.conf
+# SEE ALSO:   ../comparable-configuration.md (full analysis, sizing rules,
+#             and the external OS/host conditions this file alone cannot
+#             guarantee)
+#
+# SIZING MODEL for this file:
+#     - innodb_buffer_pool_size = 25% of host RAM (4G of 16G) -- the same
+#       ratio PostgreSQL's shared_buffers uses in the paired file, so the
+#       two engines commit an identical FRACTION of host memory, not just
+#       an identical absolute number chosen once and left unexamined.
+#     - innodb_log_file_size kept at a 1:4 ratio to the buffer pool (1G for
+#       a 4G pool), carried over unchanged from the original review.
+#     - I/O thread count = 2x vCPU count (8 read + 8 write on 4 vCPUs).
+#       InnoDB I/O threads spend most of their time blocked on the
+#       storage device, not spinning on CPU, so oversubscribing vs. raw
+#       core count is intentional and was the original, literal tuning
+#       request this profile is built from -- not a scaling artifact
+#       introduced later.
+#     - innodb_io_capacity/_max are storage-IOPS assumptions, not CPU- or
+#       RAM-derived; kept at the values the benchmark request specified.
+#       Re-verify against the actual storage backing this 4 vCPU host
+#       before trusting 2000/4000 -- see comparable-configuration.md.
+#
+# TARGET VERSION:
+#     MariaDB 12.2.2 (see mariadb_default.cnf for the full stock-default
+#     reference and its provenance notes).
+#
+# IMPORTANT -- innodb_redo_log_capacity does NOT exist in MariaDB:
+#     Verified directly against this checkout's
+#     storage/innobase/handler/ha_innodb.cc: the only redo-log-size sysvar
+#     registered there is innodb_log_file_size (default 96MB). MariaDB
+#     never adopted MySQL 8.0.30+'s innodb_redo_log_capacity; setting it
+#     here would make mariadbd refuse to start ("unknown variable").
+# =============================================================================
+
+[mysqld]
+
+# ---------------------------------------------------------------------------
+# Memory -- buffer pool (25% of 16GB host RAM)
+# Stock default: 128M. Matches postgresql_comparable_4vcpu_16gb.conf's
+# shared_buffers = 4GB -- both engines commit the same real allocation.
+# ---------------------------------------------------------------------------
+innodb_buffer_pool_size        = 4G
+
+# ---------------------------------------------------------------------------
+# InnoDB Redo Log (1:4 ratio to buffer pool)
+# Stock default: 96M. Matches max_wal_size = 1GB on the PG side.
+# ---------------------------------------------------------------------------
+innodb_log_file_size           = 1G
+
+# ---------------------------------------------------------------------------
+# I/O capacity -- background flush/purge rate limit (storage-bound, not
+# scaled with vCPU/RAM tier)
+# Stock defaults: innodb_io_capacity=200, innodb_io_capacity_max=2000(auto).
+# ---------------------------------------------------------------------------
+innodb_io_capacity             = 2000
+innodb_io_capacity_max         = 4000
+
+# ---------------------------------------------------------------------------
+# I/O threads -- 2x vCPU count (4 vCPUs -> 8 read + 8 write)
+# Stock default: 4 read + 4 write.
+# ---------------------------------------------------------------------------
+innodb_read_io_threads         = 8
+innodb_write_io_threads        = 8
+
+# ---------------------------------------------------------------------------
+# Thread handling (not vCPU-dependent; applies to both size tiers)
+# Stock default: one-thread-per-connection. Removes MariaDB's per-query
+# thread-creation overhead, which PostgreSQL's process model never pays.
+# ---------------------------------------------------------------------------
+thread_handling                = pool-of-threads
+
+# ---------------------------------------------------------------------------
+# NOT changed here -- see comparable-configuration.md for why:
+#   innodb_flush_method (default fsync) -- matches PG's non-O_DIRECT default.
+#   innodb_flush_neighbors (default 1) -- storage-medium decision, not a
+#     sizing one; revisit only for a known NVMe/vSAN target.
+# ---------------------------------------------------------------------------
