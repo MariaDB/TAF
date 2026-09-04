@@ -3,7 +3,7 @@ package TAF::Run;
 # TAF::Run
 #
 # Created: December 2025
-# Last Modified: March 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -124,6 +124,7 @@ package TAF::Run;
 #     - All logging uses TAF::Logging for contributor-proof traceability of
 #       every major stage and decision.
 #############################################################################
+our $VERSION = '4.0';
 #===============================================================================
 #                            Imports
 #===============================================================================
@@ -141,6 +142,7 @@ use profile_libs::Runner;
 use TAF::Logging qw(PrintError
                     PrintHeader
                     PrintLine
+                    PrintTafConfigToFile
                     PrintWarning
                     PrintVerbose
                     StageStart
@@ -150,11 +152,8 @@ use TAF::Logging qw(PrintError
 require toolsLib;
 use TAF::Archive;
 use TAF::Database;
-use TAF::Utilities qw(
-    ExecuteOsScript
-);
-use constant TAF_RUN => 'TAF::Run::';
-our $VERSION = '3.0';
+use TAF::DatabaseConfigurationHandler;
+use TAF::Utilities;
 
 #===============================================================================
 #                            Exports
@@ -176,6 +175,7 @@ use constant {
     UNDEF  => undef,
 };
 
+use constant TAF_RUN => 'TAF::Run::';
 #===============================================================================
 #                            Run Functions
 #===============================================================================
@@ -241,6 +241,12 @@ sub RunTests {
     foreach my $test (@{$ctx->{tests}}) {
         PrintHeader("== STAGE: TEST LOOP STARTING ======================","=",71);
         PrintVerbose($rth."Current Test: $test");
+
+        # Generate test case properties file with db config for runs archive.
+        return ERROR if TAF::Properties::GenerateTestCaseUserPropertiesFile($ctx) != OK;
+        
+        # Dump the fully resolved configuration when requested
+        TAF::Logging::PrintTafConfigToFile($ctx);
 
         $flags->{archive_completed}     = FALSE;
         $ctx->{state}{warmup_run_done}  = FALSE;
@@ -520,6 +526,10 @@ sub RunWarmupIteration {
 #                         Always forces MainTestSetup to run, regardless of
 #                         test_setup_mode.
 #
+#             restore   - Create a restore image on first iteration, then
+#                         restore the datadir before each iteration. Ensures
+#                         deterministic physical state across all iterations.
+#
 # PARAMETERS:
 #     $ctx     Framework context object.
 #     $test    Test case descriptor.
@@ -536,6 +546,14 @@ sub RunWarmupIteration {
 #     - If database_iteration_mode is "reset":
 #           * Fully recreate database via DbReset().
 #           * Force MainTestSetup to run this iteration.
+#
+#     - If database_iteration_mode is "restore":
+#           * On first iteration, create restore image and immediately restore
+#             from it so iteration 1 runs on the same physical state as later
+#             iterations. This avoids skew where a natively-filled datadir is
+#             measurably slower than a restored copy on virtualized storage.
+#             CREDIT: Viktor Ganeles (Virtuozzo) for identifying the issue and
+#             contributing the fix.
 #
 #     - Evaluate test_setup_mode:
 #           skip:
@@ -559,7 +577,7 @@ sub RunWarmupIteration {
 #
 # RETURNS:
 #     OK     Setup executed or skipped successfully.
-#     ERROR  DbRestart(), DbReset(), or MainTestSetup() failed.
+#     ERROR  DbRestart(), DbReset(), MainTestSetup(), or restore operations fail.
 #
 # NOTES:
 #     - Ensures deterministic, contributor-proof setup and warmup behavior.
@@ -591,36 +609,39 @@ sub CheckTestSetup {
     PrintVerbose($ct."State: initial_test_setup_done  = ".$initialTsDone);
     PrintVerbose($ct."State: restore_created          = ".$restoreCreated);
 
-    # Optional: restart or reset database each iteration
+    # Optional: restart, reset, or restore database each iteration
     if ($firstLoop != TRUE) {
-        if($dbMode ne "preserve"){
-            if($dbMode eq "restore" && $restoreCreated){
+        if ($dbMode ne "preserve") {
+
+            if ($dbMode eq "restore" && $restoreCreated) {
                 PrintVerbose("Database restore requested, restoring database for initial setup.");
                 return _RestoreImage($ctx);
-            }
-            elsif($dbMode eq "restart"){
+            } 
+            elsif ($dbMode eq "restart") {
                 PrintVerbose("Database restart requested before iteration $iter; invoking TAF::Database::DbRestart().");
                 if (TAF::Database::DbRestart($ctx) != OK) {
                     PrintError("TAF::Database::DbRestart() failed before iteration $iter.");
                     return ERROR;
                 }
-                $state->{warmup_run_done}=FALSE;
-            } elsif($dbMode eq "reset"){
+                $state->{warmup_run_done} = FALSE;
+            } 
+            elsif ($dbMode eq "reset") {
                 PrintVerbose("Database reset requested before iteration $iter; invoking TAF::Database::DbReset().");
                 if (TAF::Database::DbReset($ctx) != OK) {
                     PrintError("TAF::Database::DbReset() failed before iteration $iter.");
                     return ERROR;
                 }
                 $should_run = TRUE;
-            } else {
+            } 
+            else {
                 PrintError("Invalid database_iteration_mode '$dbMode'. Must be one of: preserve, restart, restore, reset");
                 return ERROR;
             }
         }
     }
 
-    # if not using database restore, check the test setup mode
-    if($dbMode ne "restore"){
+    # Test setup mode evaluation (skip|once|per_test|per_iter)
+    if ($dbMode ne "restore") {
         # Mode: skip
         if ($tsMode ne "skip") {
             # Mode: once for entire run
@@ -638,22 +659,26 @@ sub CheckTestSetup {
             # Mode: every iteration
             elsif ($tsMode eq "per_iter") {
                 $should_run = TRUE;
-            } else {
+            }
+            else {
                 PrintError("Invalid test_setup_mode '$tsMode'. Must be one of: skip, once, per_test, per_iter");
                 return ERROR;
             }
-        } else {
-           # Skipping
-           if ($state->{skip_test_setup_warned} != TRUE) {
-               PrintWarning($ct."TestSetup is disabled (mode=skip).");
-               $state->{skip_test_setup_warned} = TRUE;
-           }
         }
-    } else{
+        else {
+            # Skipping
+            if ($state->{skip_test_setup_warned} != TRUE) {
+                PrintWarning($ct."TestSetup is disabled (mode=skip).");
+                $state->{skip_test_setup_warned} = TRUE;
+            }
+        }
+    } 
+    else {
+        # restore mode always requires setup
         $should_run = TRUE;
     }
 
-    # Should we run test setup?
+    # Run test setup if required
     if ($should_run) {
         PrintVerbose($ct."Calling MainTestSetup");
         if (MainTestSetup($ctx, $test, $thread, $iter) != OK) {
@@ -661,13 +686,25 @@ sub CheckTestSetup {
         }
         $state->{initial_test_setup_done} = TRUE;
         $state->{warmup_run_done}         = FALSE;
-        if($dbMode eq "restore" && !$restoreCreated){
-           PrintVerbose("Database restore requested, creating restore image...");
-           return ERROR if _CreateRestoreImage($ctx) != OK;
+
+        # PR-9: Create restore image and immediately restore it
+        if ($dbMode eq "restore" && !$restoreCreated) {
+            PrintVerbose("Database restore requested, creating restore image...");
+            return ERROR if _CreateRestoreImage($ctx) != OK;
+
+            PrintVerbose("Restoring image so iteration 1 runs on a restored datadir.");
+            $state->{first_time_in_tests_loop} = FALSE;
+
+            return _RestoreImage($ctx);
         }
     }
 
-    # We have now been in the test loop at least once
+    # PR-9: Flush page cache so restore writeback completes before DB start
+    if ($dbMode eq "restore") {
+        system("sync");
+    }
+
+    # Mark that we have now been in the test loop at least once
     $state->{first_time_in_tests_loop} = FALSE;
 
     StageEnd($ct);
@@ -729,6 +766,7 @@ sub MainTestSetup {
     my $dirs = $ctx->{dirs};
     my $opts = $ctx->{options};
     my $date = $ctx->{obj}{date};
+    my $taf_vars = $ctx->{taf_var};
 
     my $results_dir = $dirs->{results};
     
@@ -753,18 +791,23 @@ sub MainTestSetup {
     PrintVerbose("$mts2 End date/time:   $endDateTime");
     PrintVerbose("$mts2 Duration:        $elapsed seconds");
 
-    # Optional post-setup sleep
-    
-    $rc = CheckDbRestOrSleep($ctx,
-                             $mts2."sleep_after_test_setup", 
-                             $opts->{sleep_after_test_setup});
-    # Check return
-    if ($rc != OK) {
-        PrintError($mts."CheckDbRestOrSleep returned failed");
-        return ERROR;
+    # Only run DB rest/sleep if TAF actually started a DB
+    if ($taf_vars->{db_started}) {
+   
+        my $rc = CheckDbRestOrSleep($ctx,
+                                    $mts."sleep_after_test_setup",
+                                    $opts->{sleep_after_test_setup});
+   
+        if ($rc != OK) {
+            PrintError($mts."CheckDbRestOrSleep returned failed");
+            return ERROR;
+        }
+   
+    } else {
+          PrintVerbose($mts."No DB started by this TAF instance; skipping DB rest/sleep");
+   
     }
     
-
     # Check to see if SQL File to run
     return ERROR if MaybeExecuteSqlHook($ctx, 
                                         "exec_sql_file_after_test_setup", 
@@ -838,7 +881,7 @@ sub MainTestRun {
     my $dirs    = $ctx->{dirs};
     my $obj     = $ctx->{obj};
     my $opts    = $ctx->{options};
-    my $taf_vars = $ctx->{taf_var};   # kept for future-proofing; not used here
+    my $taf_vars = $ctx->{taf_var};
 
     my $resultsSubDir = $dirs->{results};
 
@@ -850,7 +893,7 @@ sub MainTestRun {
     if (uc($runType) ne 'WARMUP') {
         # write readme start metadata
         PrintVerbose($mtr2."Generating first part of runs readme.txt");
-        WriteReadmeStart($ctx, $test, $thread, $iter);
+        return ERROR if WriteReadmeStart($ctx, $test, $thread, $iter) != OK;
 
         my $dateTime = $obj->{date}->GetDateTime();
 
@@ -941,7 +984,7 @@ sub MainTestRun {
     if (uc($runType) ne 'WARMUP') {
         # finalize readme
         PrintVerbose($mtr2."Generating last part of runs readme.txt");
-        WriteReadmeEnd($ctx, $runDuration);
+        return ERROR if WriteReadmeEnd($ctx, $runDuration) != OK;
 
         # Check to see if SQL File to run
         return ERROR if MaybeExecuteSqlHook($ctx, 
@@ -955,17 +998,23 @@ sub MainTestRun {
         return ERROR;
     }
 
-    # Check for break between
-    $returnCode = CheckDbRestOrSleep($ctx,
-                                     $mtr2."sleep_after_test_run", 
-                                     $opts->{sleep_after_test_run});
-
-    # Check return
-    if ($returnCode != OK) {
-        PrintError($mtr2."CheckDbRestOrSleep returned failed");
-        return ERROR;
+    # Only run DB rest/sleep if TAF actually started a DB
+    if ($taf_vars->{db_started}) {
+   
+        $returnCode = CheckDbRestOrSleep($ctx,
+                                 $mtr."sleep_after_test_setup",
+                                 $opts->{sleep_after_test_setup});
+   
+        if ($returnCode != OK) {
+            PrintError($mtr."CheckDbRestOrSleep returned failed");
+            return ERROR;
+        }
+   
+    } else {
+          PrintVerbose($mtr."No DB started by this TAF instance; skipping DB rest/sleep");
+   
     }
-
+    
     StageEnd($mtr);
     return OK;
 }
@@ -1418,17 +1467,21 @@ sub WriteReadmeStart {
     my $wrass = StageStart(TAF_RUN."WriteReadmeStart");
 
     # Break out ctx
-    my $dirs    = $ctx->{dirs};
-    my $files   = $ctx->{files};
-    my $obj     = $ctx->{obj};
-    my $opts    = $ctx->{options};
+    my $dirs     = $ctx->{dirs};
+    my $files    = $ctx->{files};
+    my $obj      = $ctx->{obj};
+    my $opts     = $ctx->{options};
     my $taf_vars = $ctx->{taf_var};
-
 
     # Setup readme path + logger
     $dirs->{results}  = TAF::Utilities::TrailingSlash($dirs->{results});
     $files->{read_me} = $dirs->{results} . "readme.txt";
-    $ctx->{readme}    = TAF::Logging::LoggerSetup($files->{read_me});
+
+    $ctx->{readme} = TAF::Logging::LoggerSetup($files->{read_me});
+    if (!$ctx->{readme}) {
+        PrintError("WriteReadmeStart: Failed to initialize readme logger");
+        return ERROR;
+    }
 
     PrintVerbose("$wrass Started gathering details information for iteration.");
     PrintVerbose("$wrass Location: $files->{read_me}");
@@ -1455,6 +1508,7 @@ sub WriteReadmeStart {
         ["Framework Version", $taf_vars->{framework_ver}],
         ["Framework Rev",     $taf_vars->{framework_rev}],
         ["Framework Patch",   $taf_vars->{framework_patch}],
+        ["taf_commandline_literal",   $taf_vars->{org_cmdline}],
         ["TAF Commandline",   $taf_vars->{upd_cmdline}],
     );
 
@@ -1486,7 +1540,7 @@ sub WriteReadmeStart {
 
     foreach my $pair (@test_labels) {
         my ($label, $val) = @$pair;
-        next unless defined $val && $val ne '';
+        next if !defined $val || $val eq '';
         $ctx->{readme}->LogMessage(sprintf("%-*s %s", $test_width+1, $label . ":", $val));
     }
 
@@ -1511,11 +1565,15 @@ sub WriteReadmeStart {
         $ctx->{readme}->LogMessage(sprintf("%-*s %s", $host_width+1, $label . ":", $val));
     }
 
+    # Log test_case_tag
+    my $tag = $opts->{test_case_tag} // '';
+    $ctx->{readme}->LogMessage("test-case-tag:$tag");
+    
     # Database details
     my @db_labels = (
         ["Database Maker",      $taf_vars->{db_maker}],
         ["Database Version",    sql_libs::Executor::DbGetVersion($ctx)],
-        ["DB Install Dir",      $opts->{db_software_install_dir}],
+        ["DB Install Dir",      NormalizeAsciiDashes($opts->{db_software_install_dir})],
         ["Database Under Test", $opts->{database}],
         ["Database Eng",        $opts->{db_engine}],
         ["Port",                $opts->{db_port}],
@@ -1540,9 +1598,9 @@ sub WriteReadmeStart {
     # Test suite metadata
     PrintVerbose("$wrass Calling test suite's main::GetReadmeMeta()");
     my $meta = eval { main::GetReadmeMeta() };
-    if ($@) {
-        PrintError("Test suite missing required sub GetReadmeMeta()");
-        die $@;
+    if ($@ || !defined $meta || ref($meta) ne 'HASH') {
+        PrintError("WriteReadmeStart: Failed to retrieve test suite metadata");
+        return ERROR;
     }
 
     my $meta_width = List::Util::max(map { length($_) } keys %$meta);
@@ -1552,8 +1610,20 @@ sub WriteReadmeStart {
         $ctx->{readme}->LogMessage(sprintf("%-*s %s", $meta_width+1, $label, $meta->{$key}));
     }
 
+    # Append DB config block
+    if (TAF::DatabaseConfigurationHandler::WriteDbConfigMetaIntoReadme($ctx->{readme}) != OK) {
+        PrintError("WriteReadmeStart: Failed to write DB config into readme");
+        return ERROR;
+    }
+
+    # Append Generated Test Case Properties
+    if (TAF::Properties::PrintTestCaseUserPropertiesContentsToFile($ctx->{readme}) != OK) {
+        PrintError("WriteReadmeStart: Failed to write Test Case Properties into readme");
+        return ERROR;
+    }
+
     StageEnd($wrass);
-    return;
+    return OK;
 }
 
 #===============================================================================
@@ -1602,27 +1672,28 @@ sub WriteReadmeEnd {
 
     PrintVerbose("$wreass Finishing up readme.txt");
 
-    if (defined $writer) {
-        my @end_labels = (
-            ["Run Duration Seconds", $duration],
-            ["Test End Date Time",   $date->GetDateTime()],
-        );
-
-        my $end_width = List::Util::max(map { length($_->[0]) } @end_labels);
-
-        foreach my $pair (@end_labels) {
-            my ($label, $val) = @$pair;
-            $writer->LogMessage(sprintf("%-*s %s", $end_width+1, $label . ":", $val));
-        }
-
-        $writer->LogMessage(" _EOF_");
+    if (!$writer) {
+        PrintError("$wreass readme_writer not initialized");
+        StageEnd($wreass);
+        return ERROR;
     }
-    else {
-        PrintWarning("$wreass readme_writer not initialized - skipping log write");
+
+    my @end_labels = (
+        ["Run Duration Seconds", $duration],
+        ["Test End Date Time",   $date->GetDateTime()],
+    );
+
+    my $end_width = List::Util::max(map { length($_->[0]) } @end_labels);
+
+    foreach my $pair (@end_labels) {
+        my ($label, $val) = @$pair;
+        $writer->LogMessage(sprintf("%-*s %s", $end_width+1, $label . ":", $val));
     }
+
+    $writer->LogMessage(" _EOF_");
 
     StageEnd($wreass);
-    return;
+    return OK;
 }
 
 #===============================================================================
@@ -2852,6 +2923,44 @@ sub RestoreImage_TarGz {
     }
 
     return OK;
+}
+
+################################################################################
+# NormalizeAsciiDashes
+#
+# Purpose:
+#   Normalize input strings by converting any Unicode dash characters
+#   (U+2010 through U+2015) into a plain ASCII hyphen ('-'). This prevents
+#   multi-byte dash variants from leaking into logs, metadata, or generated
+#   artifacts where ASCII-only formatting is required.
+#
+# Behavior:
+#   - Returns an empty string when the input is undef.
+#   - Replaces all Unicode dash characters in the U+2010–U+2015 range with
+#     a single ASCII hyphen.
+#   - Performs no other transformations or sanitization.
+#
+# Parameters:
+#   $s : Input string to normalize.
+#
+# Returns:
+#   Normalized string containing only ASCII hyphens in place of Unicode dash
+#   characters.
+#
+# Notes:
+#   - Intended for output normalization only; does not modify filesystem paths
+#     or internal directory names.
+#   - Contributor-proof: deterministic, side-effect free, and safe for use in
+#     any logging or reporting context.
+################################################################################
+sub NormalizeAsciiDashes {
+    my ($s) = @_;
+    return '' unless defined $s;
+
+    # Replace Unicode dash characters with ASCII hyphen
+    $s =~ s/[\x{2010}-\x{2015}]/-/g;
+
+    return $s;
 }
 
 ################################################################################

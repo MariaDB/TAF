@@ -3,7 +3,7 @@ package TAF::Archive;
 # TAF::Archive
 #
 # Created: December 2025
-# Last Modified: June 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -77,6 +77,7 @@ package TAF::Archive;
 use Exporter 'import';
 use File::Spec;
 use File::Basename;
+use File::Copy qw(copy);
 use strict;
 use warnings;
 
@@ -104,7 +105,7 @@ use TAF::Logging qw(PrintError
 require toolsLib;
 
 use constant TAF_ARCHIVE => 'TAF::Archive-> ';
-our $VERSION = '3.0';
+our $VERSION = '4.0';
 
 #===============================================================================
 #                             Exports
@@ -518,11 +519,27 @@ sub _MoveArchive {
 
     PrintVerbose($ma."Attempting to move ".$resdir." contents to :".$archive_dir);
 
-   PrintVerbose($ma."DEBUG = ".$debug);
+    PrintVerbose($ma."DEBUG = ".$debug);
     # Perform move operation
     if (toolsLib::MVSubs($resdir, $archive_dir, $debug) != OK) {
         PrintError($ma."MVSubs Failed");
         return ERROR;
+    }
+
+    if (defined $options_ref->{db_config_file} && $options_ref->{db_config_file} ne '') {
+        my $db_cfg = $options_ref->{db_config_file};
+    
+        if (-e $db_cfg) {
+            PrintVerbose($ma."Copying DB config file $db_cfg into archive");
+    
+            # Preserve original filename
+            my $dest = $archive_dir . "/" . File::Basename::basename($db_cfg);
+    
+            copy($db_cfg, $dest)
+                or PrintError($ma."Failed to copy DB config file: $!");
+        } else {
+            PrintVerbose($ma."DB config file $db_cfg not found, skipping copy");
+        }
     }
 
     StageEnd($ma);

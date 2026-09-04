@@ -3,8 +3,7 @@ package sql_libs::Executor;
 # sql_libs::Executor
 #
 # Created: January 2026
-# Last Modified: June 2026
-# Version: 4.0
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -20,7 +19,7 @@ package sql_libs::Executor;
 #
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335 
 #
 # Licensed under the GNU General Public License, version 2 or later (GPLv2+).
 # See https://www.gnu.org/licenses/ for details.
@@ -581,7 +580,7 @@ sub _BuildCommand {
         my $cmd = '';
         $cmd .= "PGPASSWORD='$pass' " if defined $pass;
         $cmd .= "$client -U $user";
-        # Always use TCP loopback â€” pg_hba.conf allows 127.0.0.1; db_socket is MySQL-style
+        # Always use TCP loopback — pg_hba.conf allows 127.0.0.1; db_socket is MySQL-style
         my $pg_port = $opt->{db_port} // 5432;
         $cmd .= " -h 127.0.0.1 -p $pg_port";
         # Connect to maintenance database for DDL; -q suppresses notices
@@ -609,7 +608,7 @@ sub _BuildCommand {
     } else {
         $cmd .= " --host=$host --port=$connection --protocol=tcp";
     }
-    my $maker = _NormalizeMaker($ctx->{taf_var}{db_maker});
+    $maker = _NormalizeMaker($ctx->{taf_var}{db_maker});
     # SSL options (normalized earlier in TAF)
     if ($opt->{ssl_enabled}) {
 

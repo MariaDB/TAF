@@ -3,9 +3,9 @@ package mariadb;
 # mariadb.pm - MariaDB Database Plugin for TAF
 #
 # Created:       January 2026
-# Last Modified: July 2026
+# Last Modified: August 2026
 #
-# Vesion: 3.2
+# Vesion: 4.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -316,59 +316,7 @@ sub new {
     # Runtime pidfile now lives under runtime_dir
     $self->{pidfile} = File::Spec->catfile($runtime_dir, "mariadb_runtime.pid");
 
-    # When TAF runs as root, mariadbd/mariadb-install-db must run as a
-    # non-root OS user -- mariadbd refuses to start as root outright (unlike
-    # postgres, which just needs its server process to not be root; MariaDB's
-    # check is unconditional and has no --allow-run-as-root style override).
-    # Unlike PostgreSQL's package install (which creates a 'postgres' system
-    # user via RPM postinstall scriptlet), this plugin targets a plain tarball
-    # install with no such user created automatically -- create one if it
-    # doesn't already exist, rather than only detecting a pre-existing one
-    # like postgres.pm does.
-    $self->{is_root} = ($> == 0) ? 1 : 0;
-    if ($self->{is_root}) {
-        my @pw = getpwnam('mysql');
-        unless (@pw) {
-            PrintVerbose("${_me}::new - running as root and OS user 'mysql' does not exist; creating it");
-            system('useradd', '--system', '--no-create-home', '--shell', '/sbin/nologin', 'mysql');
-            if ($? != 0) {
-                PrintWarning("${_me}::new - useradd mysql failed (exit " . ($? >> 8) . ")");
-            }
-            @pw = getpwnam('mysql');
-        }
-        if (@pw) {
-            $self->{os_user} = 'mysql';
-            $self->{os_uid}  = $pw[2];
-            $self->{os_gid}  = $pw[3];
-            PrintVerbose("${_me}::new - running as root; server operations will use OS user 'mysql' (uid=$pw[2])");
-        } else {
-            PrintWarning("${_me}::new - running as root but OS user 'mysql' not found/creatable; mariadbd will refuse to start");
-            $self->{os_user} = undef;
-            $self->{os_uid}  = undef;
-            $self->{os_gid}  = undef;
-        }
-    }
-
     return $self;
-}
-
-################################################################################
-# _os_prefix
-#
-# PURPOSE:
-#     Return the command prefix needed to run a command as the 'mysql' OS user
-#     when TAF is executing as root. Returns an empty list when not root or
-#     when the 'mysql' OS user could not be resolved/created. Mirrors
-#     postgres.pm's _os_prefix() so both engine plugins handle a root-executed
-#     TAF the same way.
-#
-# USAGE:
-#     my @cmd = ($self->_os_prefix(), $binary, @args);
-################################################################################
-sub _os_prefix {
-    my ($self) = @_;
-    return () unless $self->{is_root} && $self->{os_user};
-    return ('runuser', '-u', $self->{os_user}, '--');
 }
 
 ################################################################################
@@ -564,7 +512,6 @@ sub db_start {
 
     # Build argv list for exec()
     my @cmd = (
-        $self->_os_prefix(),
         $server,
         "--defaults-file=$self->{config}",
         "--datadir=$data_dir",
@@ -642,7 +589,7 @@ sub db_start {
         my $dump_cmd = "$client --socket=$self->{socket} -u root -p\"$self->{db_root_pass}\" -e \"SHOW VARIABLES\" > $vars_file 2>&1";
     
         system($dump_cmd) == 0
-            ? PrintVerbose("Dumped SHOW VARIABLES to $vars_file")
+            ? PrintVerbose($_st."Dumped SHOW VARIABLES to $vars_file")
             : PrintError("Failed to dump SHOW VARIABLES to $vars_file");
     }
 
@@ -1907,33 +1854,6 @@ sub _db_prepare_data_dir {
         return ERROR;
     };
 
-    # When running as root, hand ownership to the mysql OS user so
-    # mariadb-install-db and mariadbd (both run via _os_prefix() as 'mysql')
-    # can read and write the data directory. Also chown tmpdir AND
-    # runtime_dir: the socket, pidfile, and log-error paths mariadbd opens
-    # itself actually live under runtime_dir, not tmpdir (Utilities.pm
-    # defaults db_socket to "<db_runtime_dir>db.sock", a directory distinct
-    # from tmp_dir) -- chowning only tmpdir leaves runtime_dir root-owned,
-    # so mariadbd (running as 'mysql') fails with "Bind on unix socket:
-    # Permission denied" and aborts before ever becoming ready.
-    if ($self->{is_root} && defined $self->{os_uid}) {
-        chown($self->{os_uid}, $self->{os_gid}, $dir)
-            or PrintWarning("_db_prepare_data_dir: chown $dir to $self->{os_user} failed: $!");
-        for my $shared_dir ($self->{tmpdir}, $self->{runtime_dir}) {
-            next unless $shared_dir && -d $shared_dir;
-            # Recursive, not just the directory itself: unlike data_dir (wiped
-            # and recreated from scratch above), tmpdir/runtime_dir persist
-            # across attempts, so a prior run's bootstrap/runtime pidfile or
-            # log (created before this fix existed, or by a run that failed
-            # before reaching this chown) can already exist there owned by
-            # root -- a non-recursive chown leaves those files unwritable by
-            # 'mysql', and mariadbd fails outright when it can't create/write
-            # its own --pid-file.
-            system('chown', '-R', "$self->{os_uid}:$self->{os_gid}", $shared_dir) == 0
-                or PrintWarning("_db_prepare_data_dir: recursive chown of $shared_dir failed (exit " . ($? >> 8) . ")");
-        }
-    }
-
     return OK;
 }
 
@@ -2277,7 +2197,6 @@ sub _db_run_install_db {
     # Build the install-db command line.
     # NOTE: No embedded quotes. _run_command handles argument quoting safely.
     my @cmd = (
-        $self->_os_prefix(),
         $install_db,
         "--no-defaults",
         "--basedir=$self->{install_root}",
@@ -2336,14 +2255,6 @@ sub _run_command {
 
     # Build command string from array reference
     my $cmd_str = join(' ', @$cmd_ref);
-
-    # runuser (invoked via _os_prefix() when running as root) fails outright
-    # if it cannot stat/chdir back to the shell's current working directory,
-    # even though that directory is never actually used by mariadbd -- TAF's
-    # own working directory is commonly a root-owned checkout (e.g.
-    # /root/taf), which the target OS user has no traversal rights into.
-    # /tmp is always world-traversable, so hop there first to sidestep it.
-    $cmd_str = "cd /tmp && $cmd_str" if $self->{is_root};
 
     # Optionally log the command before execution
     if ($logfile) {
@@ -2445,7 +2356,6 @@ sub _db_start_bootstrap {
 
     # Build argv list for exec()
     my @cmd = (
-        $self->_os_prefix(),
         $server,
         "--no-defaults",
         "--datadir=$datadir",
@@ -2629,30 +2539,6 @@ sub _spawn_background {
     my $logdir = File::Spec->catpath($vol, $dir, '');
     File::Path::make_path($logdir) unless -d $logdir;
 
-    # When running as root, pre-create and chown the pidfile to the target OS
-    # user *before* forking. mariadbd itself opens/writes its own --pid-file=
-    # path internally, after runuser (via _os_prefix()) has already dropped
-    # it to that user -- but this same $pidfile path is also written by this
-    # very function's parent below (`open $fh, '>', $pidfile`), which never
-    # drops privileges and stays root. Whichever of the two creates the file
-    # first ends up owning it; if root creates it first (observed in
-    # practice), mariadbd's own later write fails with "Can't create/write
-    # to file ... Permission denied" and the server dies. Pre-creating it
-    # with the right ownership up front means both writers just open an
-    # *existing* file (which doesn't change ownership) instead of racing to
-    # create it, regardless of which one gets there first.
-    if ($self->{is_root} && defined $self->{os_uid}) {
-        unless (-e $pidfile) {
-            if (open(my $fh, '>', $pidfile)) {
-                close $fh;
-            } else {
-                PrintWarning($_tag."could not pre-create pidfile $pidfile: $!");
-            }
-        }
-        chown($self->{os_uid}, $self->{os_gid}, $pidfile)
-            or PrintWarning($_tag."chown $pidfile to $self->{os_user} failed: $!");
-    }
-
     # fork the daemon
     my $pid = fork();
     if (!defined $pid) {
@@ -2673,13 +2559,6 @@ sub _spawn_background {
 
         # detach from parent session
         POSIX::setsid();
-
-        # See _run_command's matching comment: runuser (via _os_prefix())
-        # fails outright if it can't stat/chdir back to the inherited cwd,
-        # which is commonly a root-owned TAF checkout the 'mysql' OS user
-        # can't traverse into. exec() below runs runuser directly (no shell
-        # to prepend a "cd" to), so chdir here in the child instead.
-        chdir('/tmp') if $self->{is_root};
 
         # close inherited filehandles (safety hardening)
         for my $fd (3 .. 255) {

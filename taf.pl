@@ -4,7 +4,7 @@
 #
 # Created:       August 2025 (TAF 1.0)
 # Redesign:      Novemeber 2025 (TAF 2.0 architecture)
-# Last Modified: July 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -58,6 +58,7 @@
 #           * TAF::Client
 #           * TAF::CommandLine
 #           * TAF::Database
+#           * TAF::DatabaseConfigurationHandler
 #           * TAF::DatabaseSoftwareInstalls
 #           * TAF::Logging
 #           * TAF::Properties
@@ -136,9 +137,9 @@
 #       documented in the TAF usage.
 #############################################################################
 use constant FRAMEWORK          => "taf-perl";
-use constant FRAMEWORK_VERSION  => 3;
-use constant FRAMEWORK_REVISION => 1;
-use constant FRAMEWORK_PATCH    => 1;
+use constant FRAMEWORK_VERSION  => 4;
+use constant FRAMEWORK_REVISION => 0;
+use constant FRAMEWORK_PATCH    => 0;
 
 #-------------------------------------------------------------------------------
 #                              Constants
@@ -197,12 +198,13 @@ use toolsLib;
 require PropertiesParser;
 
 # Framework driver modules (Breaks driver work in to logical units of work)
-use TAF::ActionWrappers;            # Wraps actions for dispatch action
-use TAF::Archive ();                # Results archiving
-use TAF::Client;                    # Client src CMAKE builds
-use TAF::CommandLine;               # For processing commandline
-use TAF::Database;                  # Database handling plugin lib
-use TAF::DatabaseSoftwareInstalls;  # DB Software install mgt
+use TAF::ActionWrappers;               # Wraps actions for dispatch action
+use TAF::Archive ();                   # Results archiving
+use TAF::Client;                       # Client src CMAKE builds
+use TAF::CommandLine;                  # For processing commandline
+use TAF::Database;                     # Database handling plugin lib
+use TAF::DatabaseConfigurationHandler; # Handles database configuration
+use TAF::DatabaseSoftwareInstalls;     # DB Software install mgt
 use TAF::Logging qw(
     PrintError
     PrintVerbose
@@ -409,7 +411,6 @@ our %flags = (
     list_test_suites_help              => FALSE,
     list_test_types                    => FALSE,
     list_version                       => FALSE,
-    debug_print_config                 => FALSE,
     purge_archive                      => FALSE,
     purge_data_directory               => FALSE,
     purge_results_directory            => FALSE,
@@ -442,6 +443,7 @@ our %options = (
     "restore_image_format"          => undef, # How to handle the restore image.
     "tests"                         => undef, # Command-delimited list of tests to run
     "threads"                       => undef, # Command-delimited list of threads to run
+    "test_case_tag"                 => undef, # Free form tag for users to describe test run
     "test_setup_mode"               => undef, # Test setup mode.
     "instances"                     => undef, # Number of instances for ts that support it
     "test_suite"                    => undef, # Test suite to use
@@ -554,6 +556,7 @@ our %options = (
 
     # Misc operational flags
     "archive_days_to_keep"     => undef, # Number of days to protect.
+    "dump_run_state"           => undef, # Dump run state to file
     "exit_if_test_lock_exists" => undef, # Exit if TEST.LOCK exists
     "ignore_running_db_process"=> undef, # Skip pre-flight running-DB check
     "tools_debug"              => undef, # Tools debug flag
@@ -664,7 +667,6 @@ sub Main {
 #############################################################################
 sub ProcessRequest {
     return ERROR if main::InitializeFramework() != OK;
-    return ERROR if main::PrepareSuite()        != OK;
     return main::DispatchAction();
 }
 
@@ -724,8 +726,13 @@ sub InitializeFramework {
     # Validation of the requested action
     main::_ActionCheck();
 
-    # Early database checks for running processes and SSL configuration
-    main::_DatabaseChecks();
+    # load in test suite
+    return ERROR if main::PrepareSuite() != OK;
+
+    # Early database checks for running processes and db configuration handling
+    if (TAF::Utilities::IsDbAction($options{action})) {
+        main::_DatabaseChecks();
+    }
 
     return OK;
 }
@@ -921,38 +928,36 @@ sub TAFEnd {
 # _PreActionTasks
 #
 # PURPOSE:
-#     Perform all tasks required before executing the selected action. This
-#     includes logging setup, test suite loading, duration resolution, metadata
-#     printing, and database install/plugin validation when applicable.
+#     Perform all non-database preparation tasks required before executing the
+#     selected action. This includes logging setup, test suite loading, test
+#     duration resolution, and printing framework variables and host metadata.
 #
 # ARCHITECTURAL ROLE:
-#     This routine is the final preparation stage before action dispatch. It
-#     ensures that logging, test suite state, framework variables, host
-#     metadata, and database install/plugin validation are all complete and
-#     consistent. No action-level work occurs here; it prepares the environment
-#     so that DispatchAction can run safely and deterministically.
+#     This routine is the final preparation stage before DispatchAction(). It
+#     ensures that logging, test suite state, framework variables, and host
+#     metadata are fully initialized. All database install and plugin
+#     validation now occurs earlier inside InitializeFramework() via
+#     _DatabaseChecks(), and is no longer performed here.
 #
 # CONTRACT:
 #     - Must initialize logging and create the run log.
 #     - Must load the test suite.
 #     - Must determine test duration if not explicitly provided.
 #     - Must print framework variables and host metadata.
-#     - For non-install actions:
-#         * Must resolve and validate the active database install.
-#     - For DB actions:
-#         * Must validate and load the database plugin.
 #     - Must return ERROR on any recoverable failure.
 #
 # GUARANTEES:
-#     - If OK is returned, all pre-action prerequisites are satisfied.
+#     - If OK is returned, all pre-action prerequisites unrelated to database
+#       configuration are satisfied.
 #     - Logging is active and the run log exists.
 #     - The test suite is loaded and duration is known.
 #     - Framework variables and host metadata are printed.
-#     - Database install and plugin validation (when required) are complete.
 #
 # NOTES:
-#     This routine does not run tests, install software, or start the database.
-#     It prepares the environment so that action dispatch can proceed safely.
+#     - This routine does not perform any database install resolution or plugin
+#       validation. Those responsibilities have been moved to
+#       InitializeFramework() to ensure DB configuration is resolved before
+#       suite preparation.
 ###############################################################################
 sub _PreActionTasks {
     Print("_PreActionTasks") if $options{verbose};
@@ -963,7 +968,7 @@ sub _PreActionTasks {
 
     my $pa = StageStart(TAFMsg("_PreActionTasks"));
 
-    # Load the test suite.
+    # Load the test suite
     $res = TAF::TestSuiteManagement::LoadTestSuite($ctx);
     return ERROR if $res != OK;
 
@@ -975,20 +980,6 @@ sub _PreActionTasks {
 
     # Print host details to log, and screen if verbose
     TAF::Logging::PrintHostDetails($options{host});
-
-    # Resolve install and load DB plugin when required
-    if (!TAF::Utilities::IsInstallAction($options{action})) {
-
-        PrintVerbose($pa."Resolving and validating database software install");
-        $res = TAF::DatabaseSoftwareInstalls::ResolveAndValidateInstall($ctx);
-        return ERROR if $res != OK;
-
-        if (TAF::Utilities::IsDbAction($options{action})) {
-            PrintVerbose($pa."Validating database plugin");
-            $res = TAF::Database::ValidateInstallLoadDbPlugin($ctx);
-            return ERROR if $res != OK;
-        }
-    }
 
     StageEnd($pa);
     return OK;
@@ -1133,9 +1124,6 @@ sub _LoadProperties{
 
     # Apply commandline overrides again, now that all properties are known
     TAF::Properties::ApplyOverrides($ctx, $tmpoptions_ref);
-
-    # Dump the fully resolved configuration when requested
-    TAF::Logging::PrintTafConfigToFile($ctx);
 }
 
 ###############################################################################
@@ -1178,6 +1166,10 @@ sub _ProcessEnvironment{
 
     # Environment setup
     return ERROR if TAF::Utilities::EnvironmentSetup($ctx) != OK;
+    
+    # Clean/archive taf's tmp and reports dirs making them clean of any leftovers.
+    TAF::Utilities::CleanTmpDir($ctx);
+    TAF::Utilities::CleanReportsDir($ctx);
 
     return OK;
 }
@@ -1220,76 +1212,69 @@ sub _ActionCheck{
     }
 }
 
-###############################################################################
+#===============================================================================
 # _DatabaseChecks
 #
-# PURPOSE:
-#     Perform early database-related validation before any action execution.
-#     This routine ensures that DB actions do not proceed when a database
-#     process is already running, that SSL configuration is not supplied
-#     through the DB config file, and that required SSL files exist when
-#     SSL is enabled through TAF options.
+# Purpose:
+#     Early DB action guard. Ensures that no DB process is already running,
+#     resolves the active database software install, resolves and materializes
+#     the DB configuration, and validates/loads the DB plugin for DB actions.
 #
-# ARCHITECTURAL ROLE:
-#     - Determine whether the requested action is a DB action.
-#     - Check for an already-running database process.
-#     - Reject SSL directives found in the DB configuration file.
-#     - Validate that required SSL files exist and are readable based on
-#       db_ssl_mode and TAF SSL options.
+# Parameters:
+#     $ctx : Framework context handle.
 #
-# BEHAVIOR:
-#     - Delegates running-process detection to
-#       TAF::Utilities::CheckForRunningDbProcess().
-#     - Delegates config-file SSL scanning to
-#       TAF::Database::ConfigContainsSSL().
-#     - Delegates SSL file existence checks to
-#       TAF::Database::CheckSslFiles(), which prints its own error messages.
-#     - Uses QuickExit() for fatal validation failures.
+# Behavior:
+#     - Always check for an already-running DB process first.
 #
-# RETURNS:
-#     (no explicit return value)
-#     - Continues execution if all checks pass.
-#     - Terminates the run via QuickExit() on validation failure.
+#     - For non-install actions:
+#         * Resolve and validate the active database software install.
 #
-# NOTES:
-#     - This routine performs only early DB validation. Full DB lifecycle
-#       management occurs later in the action wrappers.
-#     - SSL configuration must be provided exclusively through TAF options,
-#       not through the DB config file.
-#     - SSL file validation occurs here so that failures are detected before
-#       any database initialization or startup routines execute.
-#     - This routine does not modify the context object.
-###############################################################################
-sub _DatabaseChecks{
-    # Early DB process running or config SSL validation
-    if (TAF::Utilities::IsDbAction($options{action})) {
+#         * For DB actions:
+#               - Resolve and build the DB configuration (origin resolution,
+#                 inline/file/CLI handling, tmp file materialization, SSL
+#                 validation, provenance recording).
+#               - Validate and load the database plugin.
+#
+# Returns:
+#     OK    All checks passed.
+#     ERROR Any validation failure (via QuickExit).
+#===============================================================================
+sub _DatabaseChecks {
+    my $options = $ctx->{options};
 
-        # Check for already running
-        my $_results = TAF::Utilities::CheckForRunningDbProcess($ctx);
-        if ($_results != OK) {
-            main::QuickExit(
-                "\n\tERROR: Database process already running on this host." .
-                "\n\tUse --ignore-running-db-process to override, or run shutdown-db-hard.\n"
-            );
+    # Always first: check for already-running DB process
+    my $running = TAF::Utilities::CheckForRunningDbProcess($ctx);
+    if ($running != OK) {
+        main::QuickExit(
+            "\n\tERROR: Database process already running on this host." .
+            "\n\tUse --ignore-running-db-process to override, or run shutdown-db-hard.\n"
+        );
+    }
+
+    # Resolve install and validate DB plugin when required
+    if (!TAF::Utilities::IsInstallAction($options->{action})) {
+
+        my $res = TAF::DatabaseSoftwareInstalls::ResolveAndValidateInstall($ctx);
+        if ($res != OK) {
+            main::QuickExit("\nERROR: Failed to resolve database software install.\n");
         }
 
-        # Do not allow ssl setting in configuration file.
-        if (defined $options->{db_config_file} && -f $options->{db_config_file}) {
-            my $_results = TAF::Database::ConfigContainsSSL($ctx);
-            if ($_results != OK) {
-                main::QuickExit(
-                    "\nERROR: SSL options found in DB config file '$options->{db_config_file}'.\n" .
-                    "TAF requires all SSL configuration to be provided via TAF options only.\n"
-                );
+        if (TAF::Utilities::IsDbAction($options->{action})) {
+
+            # Resolve DB configuration BEFORE loading DB plugin
+            my $rc = TAF::DatabaseConfigurationHandler::LoadAndBuildDBCFG($ctx);
+            if ($rc != OK) {
+                main::QuickExit("\nERROR: Failed to resolve database configuration.\n");
+            }
+
+            $res = TAF::Database::ValidateInstallLoadDbPlugin($ctx);
+            if ($res != OK) {
+                main::QuickExit("\nERROR: Failed to validate or load database plugin.\n");
             }
         }
-
-        # If using SSL, make sure we have what we need
-        my $_ssl = TAF::Database::CheckSslFiles($ctx);
-        if ($_ssl != OK) {
-            main::QuickExit("\nERROR: SSL file issue!\n");
-        }
     }
+
+    return OK;
 }
 
 #-------------------------------------------------------------------------------
@@ -1312,7 +1297,7 @@ sub QuickExit {
         TAF::Utilities::RemoveFile($files{test_lock});
     }
 
-    exit OK;
+    POSIX::_exit(0);
 }
 
 __END__

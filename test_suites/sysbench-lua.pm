@@ -3,7 +3,7 @@
 #
 # Created: September 2025
 # Last Modified: August 2026
-# Version: 1.5
+# Version: 4.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -81,8 +81,8 @@
 ## Metadata
 ## --------------------------------------------------------------------------
 our $properties_prefix = "sysbench_lua";
-our $ts_version        = 1;
-our $ts_revision       = 5;
+our $ts_version        = 4;
+our $ts_revision       = 0;
 our $ts_type           = "benchmark";
 our $client_version    = "Sysbench-1.0";
 our $ctx               = undef;
@@ -1424,27 +1424,29 @@ sub ValidateTargetWithSuite {
     my ($incoming) = @_;
 
     my $vt = StageStart(TAFMsg("Sysbench-lua::ValidateTargetWithSuite ->"));
-    if(!defined $incoming){
+    if (!defined $incoming) {
         PrintError($vt."Incoming param is not defined");
+        return ERROR;
     }
 
-    if(!defined $tsOpt{db_driver}){
-        PrintWarning($vt."Test suites db_driver not defined");
+    if (!defined $tsOpt{db_driver}) {
+        PrintWarning($vt."Test suite db_driver not defined");
         PrintVerbose($vt."Allowing to move forward. Define test suite db_driver if not correct.");
         $tsOpt{db_driver} = NormalizeDBType($incoming);
         PrintVerbose($vt."Set for this run db_type to $tsOpt{db_driver}.");
         return OK;
     }
 
-        my $expected   = $tsOpt{db_driver};
-    my $normalized = NormalizeDBType($incoming) // lc($incoming);
-    my $expected_normalized = NormalizeDBType($expected) // lc($expected);
-    if ($normalized eq $expected_normalized) {
-        PrintVerbose($vt."db_driver match db maker $incoming (normalized: $normalized), returning OK.");
+    my $expected = $tsOpt{db_driver};
+    my $normalized_incoming  = NormalizeDBType($incoming);
+    my $normalized_expected  = NormalizeDBType($expected);
+
+    if ($normalized_incoming eq $normalized_expected) {
+        PrintVerbose($vt."db driver matches db maker ($incoming -> $normalized_incoming), returning OK.");
         StageEnd($vt);
         return OK;
     } else {
-        PrintError($vt."Mismatch: sysbench_lua.db_driver = $expected, db install shows $incoming (normalized: $normalized)");
+        PrintError($vt."Mismatch: sysbench_lua.db_driver=$expected (normalized=$normalized_expected), db install shows $incoming (normalized=$normalized_incoming)");
         return ERROR;
     }
 }
@@ -2674,34 +2676,18 @@ sub SetConnectionArgs {
     # Connection parameters — branched by driver family
     if ($tsOpt{db_driver} eq 'pgsql') {
 
-        # PostgreSQL uses --pgsql-* flags. drv_pgsql.c passes --pgsql-host
-        # straight into PQsetdbLogin(), and libpq treats a value starting
-        # with '/' as a unix-socket DIRECTORY rather than a hostname (unlike
-        # libmysqlclient below, "localhost" here would still mean TCP) --
-        # libpq then derives the actual socket filename (.s.PGSQL.<port>)
-        # by joining that directory with the port. $options{db_socket} is a
-        # single FILE-shaped path (Utilities.pm defaults it to
-        # "<tmp_dir>db.sock", matching MariaDB's single-socket-file
-        # convention), not a directory -- passing it straight through here
-        # made libpq look for ".../tmp/db.sock/.s.PGSQL.<port>", which never
-        # exists. Use its directory instead: postgres.pm configures
-        # postgresql.conf's unix_socket_directories to that same tmpdir
-        # (see _db_apply_postgresql_conf), so this is where the server
-        # actually creates its socket. pg_hba.conf already allows the
-        # connection ("local all all md5", see
-        # postgres.pm::_db_write_pg_hba_conf). The port is still required
-        # even for a socket connection: libpq needs it to build the
-        # ".s.PGSQL.<port>" filename.
+        # PostgreSQL socket vs TCP
         if ($options{db_clients_use_unix_socket}) {
-            # Utilities.pm always normalizes db_socket before test suites run;
-            # the tmp_dir fallback here only guards against a defensive edge
-            # case and must stay TAF-user-owned (never a root-owned system
-            # path such as /var/run/postgresql) so the non-root TAF/PostgreSQL
-            # user can actually reach the socket.
-            $args .= " --pgsql-host='" . dirname($options{db_socket} || ($options{tmp_dir} // '/tmp') . '/db.sock') . "'";
+            # libpq requires a DIRECTORY for socket connections
+            $args .= " --pgsql-host='" . dirname($options{db_socket} || '/var/run/postgresql') . "'";
         } else {
-            $args .= " --pgsql-host='127.0.0.1'";
+            # Correct TCP host logic (no hard-coded loopback unless user requested localhost)
+            my $pg_host = ($options{host} eq 'localhost')
+                          ? '127.0.0.1'
+                          : $options{host};
+            $args .= " --pgsql-host='" . $pg_host . "'";
         }
+
         $args .= " --pgsql-port=" . $options{db_port};
         $args .= " --pgsql-user='" . $options{db_user} . "'";
         $args .= " --pgsql-password='" . $options{db_user_pass} . "'";
@@ -2737,22 +2723,25 @@ sub SetConnectionArgs {
     $args .= " --tables=" .  $tsOpt{number_of_tables};
 
     # Partitioning
-    $args .= " --oltp-num-partitions=" . $tsOpt{number_of_partitions} if defined $tsOpt{number_of_partitions};
+    $args .= " --oltp-num-partitions=" . $tsOpt{number_of_partitions}
+        if defined $tsOpt{number_of_partitions};
 
-    # Shutdown behavior (MySQL/MariaDB only — not supported by pgsql driver)
+    # Shutdown behavior (MySQL/MariaDB only)
     if ($tsOpt{db_driver} ne 'pgsql' && $tsOpt{forced_shutdown}) {
-        $args .= " --forced-shutdown=" . $tsOpt{forced_shutdown_sec} if defined $tsOpt{forced_shutdown_sec};
+        $args .= " --forced-shutdown=" . $tsOpt{forced_shutdown_sec}
+            if defined $tsOpt{forced_shutdown_sec};
     }
 
-    # Storage engine (MySQL/MariaDB only — PostgreSQL has no storage engine concept)
+    # Storage engine (MySQL/MariaDB only)
     if ($tsOpt{db_driver} ne 'pgsql') {
-        # Errors to ignore
-        $args .= " --mysql-ignore-errors=" . $tsOpt{ignore_errors} if defined $tsOpt{ignore_errors};
+        $args .= " --mysql-ignore-errors=" . $tsOpt{ignore_errors}
+            if defined $tsOpt{ignore_errors};
 
-        $args .= " --mysql-storage-engine=" . lc($options{db_engine}) if defined $options{db_engine};
+        $args .= " --mysql-storage-engine=" . lc($options{db_engine})
+            if defined $options{db_engine};
     }
 
-    # Per-table CREATE TABLE options (e.g. TidesDB table options)
+    # Per-table CREATE TABLE options
     if (defined $tsOpt{create_table_options} && length $tsOpt{create_table_options}) {
         $args .= " --create-table-options='" . $tsOpt{create_table_options} . "'";
     }
@@ -2762,7 +2751,8 @@ sub SetConnectionArgs {
     $args .= " --auto-inc="   .$tsOpt{auto_inc};
 
     # Seed RNG
-    $args .= " --rand-seed=" . $tsOpt{seed_rng} if $tsOpt{seed_rng} > ZERO;
+    $args .= " --rand-seed=" . $tsOpt{seed_rng}
+        if $tsOpt{seed_rng} > ZERO;
 
     # Benchmark-specific options
     if ($tsOpt{use_bmk}) {
@@ -2780,28 +2770,39 @@ sub SetConnectionArgs {
         }
 
         $args .= " --thread-init-timeout=" . $tsOpt{thread_init_timeout};
-        # BMK mysql-ssl flag applies to MySQL/MariaDB only
+
+        # MySQL/MariaDB only
         $args .= " --mysql-ssl=" .$tsOpt{bmk_mysql_ssl}
             if defined $tsOpt{bmk_mysql_ssl} && $tsOpt{db_driver} ne 'pgsql';
 
-        $args .= " --sync-file='" . $tsOpt{bmk_sync_file} . "'" if defined $tsOpt{bmk_sync_file};
-        $args .= " --sync-wait=" . $tsOpt{bmk_sync_file_wait_timeout_ms} if defined $tsOpt{bmk_sync_file_wait_timeout_ms};
+        $args .= " --sync-file='" . $tsOpt{bmk_sync_file} . "'"
+            if defined $tsOpt{bmk_sync_file};
+
+        $args .= " --sync-wait=" . $tsOpt{bmk_sync_file_wait_timeout_ms}
+            if defined $tsOpt{bmk_sync_file_wait_timeout_ms};
+
     } else {
         # MySQL/MariaDB non-BMK SSL flag
-        $args .= " --mysql-ssl" if defined $tsOpt{mysql_ssl} && $tsOpt{db_driver} ne 'pgsql';
+        $args .= " --mysql-ssl"
+            if defined $tsOpt{mysql_ssl} && $tsOpt{db_driver} ne 'pgsql';
     }
 
-    # SSL certs — MySQL/MariaDB specific flags; pgsql SSL is configured via postgresql.conf
+    # SSL certs — MySQL/MariaDB only
     if ($tsOpt{db_driver} ne 'pgsql') {
-        $args .= " --mysql-ssl-ca='"   . $tsOpt{mysql_ssl_ca}   . "'" if defined $tsOpt{mysql_ssl_ca};
-        $args .= " --mysql-ssl-cert='" . $tsOpt{mysql_ssl_cert} . "'" if defined $tsOpt{mysql_ssl_cert};
-        $args .= " --mysql-ssl-key='"  . $tsOpt{mysql_ssl_key}  . "'" if defined $tsOpt{mysql_ssl_key};
+        $args .= " --mysql-ssl-ca='"   . $tsOpt{mysql_ssl_ca}   . "'"
+            if defined $tsOpt{mysql_ssl_ca};
+        $args .= " --mysql-ssl-cert='" . $tsOpt{mysql_ssl_cert} . "'"
+            if defined $tsOpt{mysql_ssl_cert};
+        $args .= " --mysql-ssl-key='"  . $tsOpt{mysql_ssl_key}  . "'"
+            if defined $tsOpt{mysql_ssl_key};
     }
 
     # Charset and partitioning (MySQL/MariaDB only)
     if ($tsOpt{db_driver} ne 'pgsql') {
-        $args .= " --mysql-table-partitions=" . $tsOpt{bmk_partitions} if $tsOpt{bmk_partitions} > ZERO;
-        $args .= " --mysql-check-charset=1" if $tsOpt{bmk_check_character_set} > ZERO;
+        $args .= " --mysql-table-partitions=" . $tsOpt{bmk_partitions}
+            if $tsOpt{bmk_partitions} > ZERO;
+        $args .= " --mysql-check-charset=1"
+            if $tsOpt{bmk_check_character_set} > ZERO;
     }
 
     # Debug flags
@@ -2810,12 +2811,11 @@ sub SetConnectionArgs {
 
     $tsOpt{args} = $args;
 
-    #PrintVerbose($_sca."Connection Args:");
-    #PrintVerbose($tsOpt{args});
     StageEnd($_sca);
-
     return OK;
 }
+
+
 #-----------------------------------------------------------------------------
 # SetLoadArgs
 #

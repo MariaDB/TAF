@@ -1,10 +1,10 @@
 package taf.backend.parser;
 /******************************************************************************
  * CliArgs.java
- * TAF-Backend-Parser Version: 1.0
+ * TAF-Backend-Parser Version: 1.5
  *
  * Created: May 2026
- * Last Modified: June 2026
+ * Last Modified: August 2026
  *
  * This file is part of the Test Automation Framework (TAF).
  * Copyright (c) 2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -20,7 +20,6 @@ package taf.backend.parser;
  * SCOPE OF THIS MODULE:
  *     - Support raw results ingestion via --raw-results-file or --stdin.
  *     - Load backend configuration via --backend-config.
- *     - Load DB configuration via --db-config-file.
  *     - Support comparison mode via --run-id.
  *     - Support baseline creation via --set-baseline.
  *     - Provide a --help flag for usage output.
@@ -28,7 +27,8 @@ package taf.backend.parser;
  * WHAT THIS MODULE DOES NOT DO:
  *     - Does not validate file existence or workload semantics.
  *     - Does not perform parsing, ingest, or comparison logic.
- *     - Does not load configuration files or manage DB connections.
+ *     - Does not load external DB configuration files (removed).
+ *     - Does not manage DB connections.
  *
  * CONTRACT:
  *     Input:
@@ -48,7 +48,6 @@ public class CliArgs {
 
     // ingestion
     public String rawResultsFile;
-    public String dbConfigFile;
     public boolean stdinMode;
 
     // backend config (DB connection)
@@ -70,13 +69,9 @@ public class CliArgs {
                 case "--raw-results-file":
                     c.rawResultsFile = args[++i];
                     break;
-                    
-                case "--stdin":
-                	c.stdinMode = true;
-                    break;
 
-                case "--db-config-file":
-                    c.dbConfigFile = args[++i];
+                case "--stdin":
+                    c.stdinMode = true;
                     break;
 
                 case "--backend-config":

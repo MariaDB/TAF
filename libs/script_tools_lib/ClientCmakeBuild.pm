@@ -127,9 +127,9 @@ my $isOracle        = 0;
 my @makers = qw(
     mariadb
     mysql
+    percona
     postgresql
     postgres
-    percona
     oracle
 );
 
@@ -298,11 +298,9 @@ sub Build {
 #     - Locates pg_config under install_dir/bin or /usr/bin.
 #     - Queries pg_config for includedir and libdir.
 #     - Validates that both directories exist.
-#     - Confirms presence of the required PostgreSQL client header:
+#     - Confirms presence of required PostgreSQL headers:
+#           postgres.h
 #           libpq-fe.h
-#       (only the libpq client header is needed -- drv_pgsql.c is a libpq
-#       client, not a server-side extension, so the server-only postgres.h
-#       is deliberately not required here)
 #     - Exports INC and LIB to the environment.
 #     - Appends PostgreSQL-specific include and library flags to cmakeArgs.
 #     - Emits detailed debug output when enabled.
@@ -355,6 +353,26 @@ sub _SetupForPGBuild {
 
     if (! $includeDir || ! -d $includeDir) {
         _DebugPrint("ERROR: pg_config --includedir returned invalid directory: '$includeDir'");
+        return ERROR;
+    }
+
+    # Validate required PostgreSQL header
+    # Locate postgres.h (server header required by Sysbench PG driver)
+    my $pgHeader;
+    for my $candidate (
+        File::Spec->catfile($includeDir, 'postgres.h'),
+        File::Spec->catfile($includeDir, 'server', 'postgres.h'),
+    ) {
+        if (-f $candidate) {
+            $pgHeader = $candidate;
+            last;
+        }
+    }
+
+    if (! $pgHeader) {
+        _DebugPrint("ERROR: Required PostgreSQL header not found:");
+        _DebugPrint("  Tried: $includeDir/postgres.h");
+        _DebugPrint("  Tried: $includeDir/server/postgres.h");
         return ERROR;
     }
 
@@ -938,14 +956,6 @@ sub _SetupBuild {
 # NOTES:
 #     - This routine performs no guessing or fuzzy matching.
 #     - Unsupported makers must be rejected by the caller.
-#     - @makers order matters: "percona" must be checked AFTER
-#       "postgresql"/"postgres". Percona ships both a MySQL/MariaDB fork
-#       and (since this repo added PostgreSQL support) a PostgreSQL
-#       distribution, and the real-world install dir name for the latter
-#       is "percona-postgresql-<ver>-...". Checking "percona" first
-#       misclassified every Percona PostgreSQL install as MariaDB-family,
-#       which then fails in _SetupForMariaDBFamilyBuild() looking for
-#       mysql.h/libmysqlclient that were never going to be there.
 ################################################################################
 sub _DetectMakerFromInstallDir {
     my ($installDir) = @_;
@@ -957,13 +967,9 @@ sub _DetectMakerFromInstallDir {
     $isPG            = 0;
     $isOracle        = 0;
 
-    # Scan for known makers. The token must start a path segment or follow a
-    # "-"/"_" separator (not just "/") -- vendor-prefixed directory names
-    # like "percona-postgresql-18.4-..." put the maker token after a "-",
-    # not right after a "/", so a plain m{/\Q$maker\E} anchor never matches
-    # it at all regardless of list order.
+    # Scan for known makers
     for my $maker (@makers) {
-        if ($path =~ m{(?:^|[/_-])\Q$maker\E(?:[/_-]|\d|$)}i) {
+        if ($path =~ m{/\Q$maker\E[^/]*}i) {
 
             # Set flags once, bail immediately
             if ($maker eq 'mariadb' || $maker eq 'mysql' || $maker eq 'percona') {

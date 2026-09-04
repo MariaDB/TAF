@@ -3,7 +3,7 @@ package TAF::Utilities;
 # TAF::Utilities
 #
 # Created: December 2025
-# Last Modified: July 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -79,7 +79,7 @@ package TAF::Utilities;
 #       install-type inference pipeline and must remain stable unless
 #       coordinated with DatabaseSoftwareInstalls.
 #############################################################################
-our $VERSION = '3.1';
+our $VERSION = '4,0';
 #===============================================================================
 #                            Imports
 #===============================================================================
@@ -134,6 +134,7 @@ our @EXPORT = qw(
     AllKnownDBExecutables
     CheckForRunningDbProcess
     CheckPerlVersion
+    CleanReportsDir
     CleanRuntimeDir
     CleanTmpDir
     CreateTestLock
@@ -177,9 +178,8 @@ our %PLUGIN_ALIASES = (
     mariadbd  => 'mariadb',
     mysql     => 'mysql',
     mysqld    => 'mysql',
-    postgres   => 'postgres',
-    pgsql      => 'postgres',
-    postgresql => 'postgres',
+    postgres  => 'postgres',
+    pgsql     => 'postgres',
     oracle    => 'oracle',
     sqlplus   => 'oracle',
 );
@@ -383,14 +383,14 @@ sub CheckForRunningDbProcess {
 
     # ignore flag explicitly set
     if($options->{ignore_running_db_process}){
-        print("\n\t.Found ignore_running_db_process = true, returning.") if ($options->{verbose});
+        print("CheckForRunningDbProcess: Found ignore_running_db_process = true, returning.\n") if ($options->{verbose});
         return OK;
     }
 
 
     # shutdown actions always allowed
     if($action eq 'shutdown-db'){
-        print("\n\t.Action = shutdown-db, returning.") if ($options->{verbose});
+        print("CheckForRunningDbProcess: Action = shutdown-db, returning.\n") if ($options->{verbose});
         return OK;
     }
 
@@ -401,7 +401,7 @@ sub CheckForRunningDbProcess {
     foreach my $bin (@bins) {
         my $rc = system("pgrep -x $bin > /dev/null 2>&1");
         if ($rc == 0) {
-            print("\n\tERROR: $bin found running on host.") if ($options->{verbose});
+            print("CheckForRunningDbProcess: ERROR: $bin found running on host.\n") if ($options->{verbose});
             return ERROR;
         }
     }
@@ -1583,7 +1583,6 @@ sub SetupVariables {
     # Directory-related defaults
     $options_ref->{archive_path}      //= $dirs_ref->{working} . "archive/";
     $options_ref->{logs_dir}          //= $dirs_ref->{working} . "logs/";
-    $options_ref->{debug_print_config_path} //= $options_ref->{logs_dir};
     $options_ref->{reports_directory} //= $dirs_ref->{working} . "reports/";
     $options_ref->{results_root_dir}  //= $dirs_ref->{working} . "results/";
     $options_ref->{tmp_dir}           //= $dirs_ref->{working} . "tmp/";
@@ -1683,6 +1682,75 @@ sub CleanSplit {
 }
 
 #===============================================================================
+# CleanReportsDir
+#
+# Purpose:
+#     Archive and clear the framework reports_directory before test execution.
+#
+# Parameters:
+#     $ctx : Framework context handle.
+#
+# Behavior:
+#     - Creates a timestamped archive directory under archive_path.
+#     - Moves all non-dot files from reports_directory into the archive.
+#     - Leaves reports_directory empty.
+#
+# Returns:
+#     None.
+#
+# Notes:
+#     - Mirrors CleanTmpDir behavior for reports_directory.
+#     - Always logs via PrintVerbose. Never fails the caller.
+#===============================================================================
+sub CleanReportsDir {
+    my ($ctx) = @_;
+
+    my $reports_dir = $ctx->{options}->{reports_directory};
+    my $archive_root = $ctx->{options}->{archive_path};
+
+    return unless defined $reports_dir && -d $reports_dir;
+
+    opendir(my $dh, $reports_dir) or do {
+        PrintVerbose("Failed to open reports_dir: $reports_dir");
+        return;
+    };
+
+    my @contents = grep { $_ !~ /^\.\.?$/ } readdir($dh);
+    closedir($dh);
+
+    return unless @contents;
+
+    my ($sec,$min,$hour,$mday,$mon,$year) = localtime();
+    $year += 1900;
+    $mon  += 1;
+
+    my $timestamp = sprintf("%04d%02d%02d_%02d%02d%02d",
+                            $year, $mon, $mday, $hour, $min, $sec);
+
+    my $archive_dir = File::Spec->catdir(
+        $archive_root,
+        "reports_artifacts_$timestamp"
+    );
+
+    File::Path::make_path($archive_dir);
+
+    PrintVerbose("Archiving reports_dir contents to: $archive_dir");
+
+    for my $file (@contents) {
+        my $src = File::Spec->catfile($reports_dir, $file);
+        my $dst = File::Spec->catfile($archive_dir, $file);
+
+        if (rename($src, $dst)) {
+            PrintVerbose("Moved reports artifact: $file -> $archive_dir");
+        } else {
+            PrintVerbose("Failed to move reports artifact: $file");
+        }
+    }
+
+    PrintVerbose("reports_dir cleanup complete: $reports_dir is now empty");
+}
+
+#===============================================================================
 # CleanTmpDir
 #
 # Purpose:
@@ -1750,6 +1818,7 @@ sub CleanTmpDir {
 
     PrintVerbose("tmp_dir cleanup complete: $tmp_dir is now empty");
 }
+
 
 
 #===============================================================================

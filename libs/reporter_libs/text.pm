@@ -3,7 +3,7 @@ package reporter_libs::text;
 # reporter_libs::text
 #
 # Created: December 2025
-# Last Modified: January 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -27,27 +27,36 @@ package reporter_libs::text;
 # PURPOSE:
 #     Generate plain text benchmark reports from normalized result entries
 #     produced by TAF::Reports. This plugin emits a human-readable summary
-#     including metadata, framework information, and aggregated performance
-#     metrics across all iterations.
+#     including:
+#         * test metadata
+#         * framework metadata
+#         * host/system metadata
+#         * database metadata
+#         * canonical and raw test case properties blocks
+#         * canonical and raw database configuration blocks
+#         * aggregated metrics (min, max, mean)
+#         * iteration-level metric values
 #
 # ARCHITECTURAL ROLE:
 #     - Implements the GenerateResults() interface required by TAF::Reports.
-#     - Uses lowercase-only metadata fields as defined by the TAF metadata
-#       normalization contract.
-#     - Produces a deterministic text file summarizing:
-#           * test metadata
-#           * framework metadata
-#           * host/system metadata
-#           * database metadata (including config file + contents)
-#           * aggregated metrics (min, max, mean)
-#           * iteration-level values
-#     - Ensures the output directory exists before writing.
+#     - Consumes fully normalized lowercase metadata fields.
+#     - Uses ONLY metadata extracted from readme.txt; no external files or
+#       commandline-based DB config resolution is performed.
+#     - Prints both canonical (pipe-separated) and raw multi-line blocks for:
+#           * raw_properties_block
+#           * raw_db_config_block
+#     - Prints DB config origin metadata:
+#           * db_config_origin
+#           * db_config_source_file
+#           * db_config_run_file
+#     - Produces deterministic, diff-friendly text output suitable for review.
 #
 # WHAT THIS MODULE DOES NOT DO:
 #     - Does not compute extended statistics (percentiles, skewness, kurtosis).
 #     - Does not generate charts, tables, HTML, or JSON.
 #     - Does not validate result entry structure beyond basic presence checks.
-#     - Does not modify result directories or archive output.
+#     - Does not load DB config files from disk.
+#     - Does not interpret or modify canonical or raw blocks.
 #     - Does not guess plugin names or perform dynamic dispatch.
 #
 # CONTRACT:
@@ -62,20 +71,16 @@ package reporter_libs::text;
 #
 # GUARANTEES:
 #     - Output is deterministic and stable for diffing and review.
+#     - All canonical and raw blocks are printed exactly as provided.
 #     - Missing metadata fields fall back to explicit "N/A" placeholders.
 #     - Output directory is created if missing.
 #############################################################################
-
 use strict;
 use warnings;
 use File::Spec;
 use File::Path qw(make_path);
 use List::Util qw(min max sum);
 use Exporter 'import';
-use FindBin;
-use lib "$FindBin::Bin/..";
-use File::Spec;
-use reporter_libs::_taf_paths qw(resolve_config_path);
 
 our @EXPORT_OK = qw(GenerateResults);
 
@@ -100,7 +105,7 @@ sub GenerateResults {
     my $meta  = $first->{metadata} || {};
 
     # -------------------------------------------------------------------------
-    # Derive iterations (max iteration_id or count)
+    # Derive iterations
     # -------------------------------------------------------------------------
     my $iterations = 0;
     foreach my $r (@$resultsRef) {
@@ -108,37 +113,6 @@ sub GenerateResults {
         $iterations = $id if $id && $id > $iterations;
     }
     $iterations ||= scalar(@$resultsRef);
-
-    # -------------------------------------------------------------------------
-    # Resolve DB config file + contents
-    # -------------------------------------------------------------------------
-        my $cmdline = $meta->{taf_commandline} // '';
-
-    # Split literal command line from merged properties
-    my ($literal, $props) = split /:: prop file contents ->/, $cmdline, 2;
-
-    my $dbconfig;
-
-    # 1. Command line override (highest precedence)
-    if ($literal =~ /--db-config-file=([^ ]+)/) {
-        $dbconfig = $1;
-    # 2. User properties (second precedence)
-    } elsif (defined $props && $props =~ /taf\.db_config_file=([^ ]+)/) {
-        $dbconfig = $1;
-    # 3. Metadata fallback
-    } else {
-        $dbconfig = $meta->{db_config_file} // 'unknown';
-    }
-
-    my $resolved_cfg = resolve_config_path($dbconfig);
-    my $config_contents = "[config file not found or inaccessible]";
-
-    if ($dbconfig ne 'N/A' && defined $resolved_cfg && -f $resolved_cfg) {
-        open my $cfh, '<', $resolved_cfg;
-        local $/;
-        $config_contents = <$cfh>;
-        close $cfh;
-    }
 
     # -------------------------------------------------------------------------
     # Header
@@ -213,11 +187,19 @@ sub GenerateResults {
     print $fh sprintf("%-22s %s\n", "DB User:",      SafeVal($meta, 'db_user'));
     print $fh sprintf("%-22s %s\n", "DB Root User:", SafeVal($meta, 'db_root_user'));
     print $fh sprintf("%-22s %s\n", "DB Version:",   SafeVal($meta, 'database_version'));
-    print $fh sprintf("%-22s %s\n", "Config File:",  $dbconfig);
 
-    print $fh "\n--- Config Contents ---\n\n";
-    my @cfg_lines = split /\n/, ($config_contents // '');
-    foreach my $line (@cfg_lines) {
+    print $fh sprintf("%-22s %s\n", "DB Config Origin:",      SafeVal($meta, 'db_config_origin'));
+    print $fh sprintf("%-22s %s\n", "DB Config Source File:", SafeVal($meta, 'db_config_source_file'));
+    print $fh sprintf("%-22s %s\n", "DB Config Run File:",    SafeVal($meta, 'db_config_run_file'));
+
+    # -------------------------------------------------------------------------
+    # DB Config
+    # -------------------------------------------------------------------------
+    print $fh "\n=== DB Config ===\n\n";
+    my $flat = $meta->{db_config_contents} // '';
+    my @lines = split /\|/, $flat;
+
+    foreach my $line (@lines) {
         print $fh "  $line\n";
     }
 
@@ -233,7 +215,9 @@ sub GenerateResults {
         threads warmup_threads warmup_duration test_host os os_version os_arch
         os_kernel cpu ram disk database_maker db_install_dir database_under_test
         database_eng port socket db_user db_root_user date_of_test time_of_test
-        timestamp db_config_file
+        timestamp db_config_file db_config_origin db_config_source_file
+        db_config_run_file generated_properties_file_contents raw_properties_block
+        raw_db_config_block db_config_contents
     );
 
     foreach my $key (sort keys %$meta) {

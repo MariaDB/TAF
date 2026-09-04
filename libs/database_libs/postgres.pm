@@ -3,7 +3,12 @@ package postgres;
 # postgres.pm - PostgreSQL Database Plugin for TAF
 #
 # Created:       June 2026 by lukas.oliva@virtuozzo.com using Claude
-# Last Modified: June 2026
+# Last Modified: August 2026
+#
+# Vesion: 1.0
+#
+# This file is part of the Test Automation Framework (TAF).
+# Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -70,6 +75,11 @@ package postgres;
 #       without requiring the framework context.
 #     - Must not modify global TAF state.
 #     - Must return OK/ERROR codes consistently.
+#
+# CREDITS:
+#     The MariaDB Foundation gives credit and thank you's to both Lukas Oliva
+#     and Virtuozzo (https://www.virtuozzo.com) for allowing Lukas time to
+#     implement this plugin, and other changes needed in TAF for PostgreSQL.
 ###############################################################################
 our $_me = "PostgreSQL";
 
@@ -158,38 +168,49 @@ sub new {
         ssl_key        => $args{db_ssl_key},
 
         # Database and users
-        database           => $args{database}            // 'test',
-        db_user            => $args{db_user}             // 'pgsql_tester',
-        db_user_pass       => $args{db_user_pass}        // 'PostgresPass_@123',
+        database            => $args{database}            // 'test',
+        db_user             => $args{db_user}             // 'pgsql_tester',
+        db_user_pass        => $args{db_user_pass}        // 'PostgresPass_@123',
         db_user_permissions => $args{db_user_permissions} // 'ALL PRIVILEGES',
-        db_root_user       => $args{db_root_user}        // 'postgres',
-        db_root_pass       => $args{db_root_pass}        // 'PostgresPass_@123',
+        db_root_user        => $args{db_root_user}        // 'postgres',
+        db_root_pass        => $args{db_root_pass}        // 'PostgresPass_@123',
 
         # Locality and performance
-        cpus           => $args{db_task_set},
-        db_start_wait  => $args{db_start_wait},
-        db_stop_wait   => $args{db_stop_wait},
-        tmpdir         => $args{tmp_dir},
-        runtime_dir    => $args{db_runtime_dir} // $args{tmp_dir},
+        db_cpu_affinity => $args{db_cpu_affinity},
+        db_start_wait   => $args{db_start_wait},
+        db_stop_wait    => $args{db_stop_wait},
+        tmpdir          => $args{tmp_dir},
+
+        # Runtime directory for pid, logs, etc.
+        runtime_dir     => $args{db_runtime_dir} // $args{tmp_dir},
 
         # Extras
-        extra_args     => $args{db_extra_args},
+        extra_args      => $args{db_extra_args},
 
         # State flags
-        initialized    => FALSE,
-        users_created  => FALSE,
+        initialized     => FALSE,
+        users_created   => FALSE,
 
         # Version metadata (populated during init)
-        pg_version     => undef,
-        pg_version_num => undef,
+        pg_version      => undef,
+        pg_version_num  => undef,
     };
 
     bless $self, $class;
 
-    # Validate tmpdir early — it is required throughout the lifecycle
+    # Validate tmpdir
     unless ($self->{tmpdir} && -d $self->{tmpdir}) {
         PrintError("${_me}::new - tmpdir is missing or not a directory: " .
                    ($self->{tmpdir} // "<undef>"));
+        return undef;
+    }
+
+    # Resolve effective runtime directory
+    my $runtime_dir = $self->{runtime_dir} // $self->{tmpdir};
+
+    unless ($runtime_dir && -d $runtime_dir) {
+        PrintError("${_me}::new - runtime_dir is missing or not a directory: " .
+                   ($runtime_dir // "<undef>"));
         return undef;
     }
 
@@ -200,12 +221,22 @@ sub new {
         return undef;
     }
 
-    # Resolve binaries
-    $self->{postgres_bin}   = _find_binary($self->{install_root}, 'postgres');
-    $self->{pg_ctl_bin}     = _find_binary($self->{install_root}, 'pg_ctl');
-    $self->{psql_bin}       = _find_binary($self->{install_root}, 'psql');
-    $self->{initdb_bin}     = _find_binary($self->{install_root}, 'initdb');
-    $self->{pg_isready_bin} = _find_binary($self->{install_root}, 'pg_isready');
+    # Derive paths 
+    $self->{basedir}     //= $self->{install_root};
+    $self->{bindir}      //= File::Spec->catdir($self->{install_root}, 'bin');
+    $self->{libdir}      //= File::Spec->catdir($self->{install_root}, 'lib');
+    $self->{plugin_dir}  //= File::Spec->catdir($self->{install_root}, 'lib', 'plugin');
+
+    # Export runtime environment so PostgreSQL loads its libs correctly
+    $ENV{LD_LIBRARY_PATH} = $self->{libdir} . ":" . ($ENV{LD_LIBRARY_PATH} // "");
+    $ENV{PATH}            = $self->{bindir} . ":" . ($ENV{PATH} // "");
+
+    # Resolve binaries using bindir (correct for PGDG)
+    $self->{postgres_bin}   = _find_binary($self->{bindir}, 'postgres');
+    $self->{pg_ctl_bin}     = _find_binary($self->{bindir}, 'pg_ctl');
+    $self->{psql_bin}       = _find_binary($self->{bindir}, 'psql');
+    $self->{initdb_bin}     = _find_binary($self->{bindir}, 'initdb');
+    $self->{pg_isready_bin} = _find_binary($self->{bindir}, 'pg_isready');
 
     # Validate required binaries
     for my $b (qw(postgres_bin pg_ctl_bin psql_bin initdb_bin pg_isready_bin)) {
@@ -216,41 +247,14 @@ sub new {
         }
     }
 
-    $self->{log_init}    = File::Spec->catfile($self->{tmpdir}, "postgresql_initdb.log");
-    $self->{log_start}   = File::Spec->catfile($self->{tmpdir}, "postgresql_start.log");
-    $self->{pidfile}     = File::Spec->catfile($self->{tmpdir}, "postgresql_runtime.pid");
-
-    # When TAF runs as root, initdb and pg_ctl must run as a non-root OS user --
-    # postgres refuses to run as root outright (unconditional getuid()==0 check
-    # in the server/initdb binaries themselves, not a TAF policy choice).
-    # Mirrors mariadb.pm's _os_prefix() handling so both engine plugins deal
-    # with a root-executed TAF the same way.
-    $self->{is_root} = ($> == 0) ? 1 : 0;
-    if ($self->{is_root}) {
-        my @pw = getpwnam('postgres');
-        unless (@pw) {
-            PrintVerbose("${_me}::new - running as root and OS user 'postgres' does not exist; creating it");
-            system('useradd', '--system', '--no-create-home', '--shell', '/sbin/nologin', 'postgres');
-            if ($? != 0) {
-                PrintWarning("${_me}::new - useradd postgres failed (exit " . ($? >> 8) . ")");
-            }
-            @pw = getpwnam('postgres');
-        }
-        if (@pw) {
-            $self->{os_user} = 'postgres';
-            $self->{os_uid}  = $pw[2];
-            $self->{os_gid}  = $pw[3];
-            PrintVerbose("${_me}::new - running as root; cluster operations will use OS user 'postgres' (uid=$pw[2])");
-        } else {
-            PrintWarning("${_me}::new - running as root but OS user 'postgres' not found/creatable; initdb will refuse to start");
-            $self->{os_user} = undef;
-            $self->{os_uid}  = undef;
-            $self->{os_gid}  = undef;
-        }
-    }
+    # Runtime logs and pidfile
+    $self->{log_init}  = File::Spec->catfile($runtime_dir, "postgresql_initdb.log");
+    $self->{log_start} = File::Spec->catfile($runtime_dir, "postgresql_start.log");
+    $self->{pidfile}   = File::Spec->catfile($runtime_dir, "postgresql_runtime.pid");
 
     return $self;
 }
+
 
 ################################################################################
 # db_init
@@ -332,14 +336,15 @@ sub db_init {
 #     - Reads the PID from postmaster.pid after successful startup.
 #     - Waits via _wait_for_start() which polls pg_isready.
 ################################################################################
-sub db_start {
-    my ($self, $wait_seconds) = @_;
-    my $_st = StageStart("$_me -> Database Start ->");
-
-    my $pg_ctl   = $self->{pg_ctl_bin};
-    my $data_dir = $self->{data_dir};
-    my $log      = $self->{log_start};
-    my $timeout  = $wait_seconds // $self->{db_start_wait} // 90;
+ sub db_start {
+     my ($self, $wait_seconds) = @_;
+     my $_st = StageStart("$_me -> Database Start ->");
+ 
+     my $pg_ctl     = $self->{pg_ctl_bin};
+     my $data_dir   = $self->{data_dir};
+     my $log        = $self->{log_start};
+     my $timeout    = $wait_seconds // $self->{db_start_wait} // 90;
+     my $pidfile    = $self->{pidfile};   # runtime_dir pidfile
 
     unless ($pg_ctl && -x $pg_ctl) {
         PrintError("$_st pg_ctl binary not executable: " . ($pg_ctl // "<undef>"));
@@ -351,11 +356,22 @@ sub db_start {
         return ERROR;
     }
 
-    # Port is set in postgresql.conf by _db_apply_postgresql_conf(); no need to
-    # pass it via -o here. Passing "-o -p N" through _run_command (which uses
-    # shell string form of system()) would cause shell splitting issues.
+    # Stale pidfile handling
+    if ($pidfile && -f $pidfile) {
+        if (open(my $pfh, '<', $pidfile)) {
+            my $old_pid = <$pfh>;
+            close $pfh;
+            chomp $old_pid;
+            if ($old_pid =~ /^\d+$/ && kill 0, $old_pid) {
+                PrintError("$_st PostgreSQL runtime server appears to be already running with PID $old_pid (pidfile: $pidfile)");
+                return ERROR;
+            }
+        }
+        unlink $pidfile;
+    }
+
+    # Build pg_ctl command
     my @cmd = (
-        $self->_os_prefix(),
         $pg_ctl,
         'start',
         "-D", $data_dir,
@@ -364,8 +380,19 @@ sub db_start {
         "-t", $timeout,
     );
 
+    # Extra args (no quoting)
     if ($self->{extra_args}) {
-        push @cmd, "-o", "\"$self->{extra_args}\"";
+        push @cmd, "-o", $self->{extra_args};
+    }
+
+    # CPU affinity (taskset wrapper)
+    if (defined $self->{db_cpu_affinity} && ref $self->{db_cpu_affinity} eq 'ARRAY') {
+        my @affinity = @{$self->{db_cpu_affinity}};
+        if (@affinity) {
+            my $affinity_str = join(",", @affinity);
+            unshift @cmd, "taskset", "-c", $affinity_str;
+            PrintVerbose("$_st Applying CPU affinity: $affinity_str");
+        }
     }
 
     PrintVerbose("$_st Running: @cmd");
@@ -376,15 +403,14 @@ sub db_start {
         return ERROR;
     }
 
-    # Confirm readiness via pg_isready
+    # Confirm readiness
     if ($self->_wait_for_start($timeout) != OK) {
         PrintError("$_st PostgreSQL did not become ready, see $log");
         return ERROR;
     }
 
-    # Read PID from postmaster.pid
-    my $pidfile = File::Spec->catfile($data_dir, "postmaster.pid");
-    if (-f $pidfile) {
+    # Read PID from runtime_dir pidfile
+    if ($pidfile && -f $pidfile) {
         if (open(my $fh, '<', $pidfile)) {
             my $pid = <$fh>;
             close $fh;
@@ -392,8 +418,17 @@ sub db_start {
             if ($pid =~ /^\d+$/) {
                 $self->{db_pid} = $pid;
                 PrintVerbose("$_st PostgreSQL runtime PID: $pid");
+            } else {
+                PrintError("$_st Invalid PID content in $pidfile");
+                return ERROR;
             }
+        } else {
+            PrintError("$_st PID file not readable: $pidfile");
+            return ERROR;
         }
+    } else {
+        PrintError("$_st PID file not found after successful startup: $pidfile");
+        return ERROR;
     }
 
     StageEnd($_st);
@@ -414,6 +449,7 @@ sub db_stop {
     my $pg_ctl   = $self->{pg_ctl_bin};
     my $data_dir = $self->{data_dir};
     my $timeout  = $wait_seconds // $self->{db_stop_wait} // 120;
+    my $pidfile  = $self->{pidfile};   # runtime_dir pidfile
 
     unless ($pg_ctl && -x $pg_ctl) {
         PrintError("$_st pg_ctl binary not executable: " . ($pg_ctl // "<undef>"));
@@ -429,7 +465,6 @@ sub db_stop {
     }
 
     my @cmd = (
-        $self->_os_prefix(),
         $pg_ctl,
         'stop',
         "-D", $data_dir,
@@ -444,6 +479,11 @@ sub db_stop {
     if ($rc != 0) {
         PrintError("$_st pg_ctl stop failed (exit $rc)");
         return ERROR;
+    }
+
+    # Cleanup pidfile
+    if ($pidfile && -f $pidfile) {
+        unlink $pidfile;
     }
 
     $self->{db_pid} = undef;
@@ -718,24 +758,20 @@ sub _db_run_initdb {
         return ERROR;
     }
 
-    # Write superuser password to a temporary pwfile.
-    # When running as root, the initdb process runs as the postgres OS user and
-    # cannot access paths under /root. Use /tmp for the pwfile so it is always
-    # readable, and remove it immediately after initdb completes.
-    my $pwfile_dir = ($self->{is_root} && $self->{os_user}) ? '/tmp' : $self->{tmpdir};
+    # Write password to a temporary pwfile.
+    my $pwfile_dir = $self->{tmpdir};
     my $pwfile = File::Spec->catfile($pwfile_dir, "pg_pwfile_taf_$$.tmp");
+    
     if (open(my $fh, '>', $pwfile)) {
         print $fh $rootpass // '';
         close $fh;
-        # World-readable so the postgres OS user can read it; short-lived file
-        chmod(($self->{is_root} ? 0644 : 0600), $pwfile);
+        chmod(0600, $pwfile);
     } else {
         PrintError("$_tag Cannot write pwfile: $pwfile");
         return ERROR;
     }
 
     my @cmd = (
-        $self->_os_prefix(),
         $initdb,
         "-D", $data_dir,
         "-U", $root,
@@ -784,46 +820,46 @@ sub _db_apply_postgresql_conf {
         return ERROR;
     }
 
-    # Append TAF port setting unconditionally
+    my $socket_dir = $self->{tmpdir};
+    $socket_dir =~ s{/+$}{};
+
     if (open(my $fh, '>>', $pg_conf)) {
+
         print $fh "\n# === TAF-managed settings ===\n";
+
+        # Core runtime settings
         print $fh "port = $self->{port}\n";
         print $fh "listen_addresses = '*'\n";
-
-        # Unix socket lives in TAF's db_runtime_dir, not PG's stock default
-        # (/tmp) -- this is the same directory sysbench-lua.pm's
-        # SetConnectionArgs() derives (via dirname($options{db_socket})),
-        # since Utilities.pm defaults db_socket to db_runtime_dir/db.sock,
-        # so the two must agree.
-        my $socket_dir = $self->{runtime_dir} // $self->{tmpdir};
-        $socket_dir =~ s{/+$}{};
         print $fh "unix_socket_directories = '$socket_dir'\n";
+
+        # Ensure PostgreSQL writes PID to runtime_dir, not data_dir
+        print $fh "external_pid_file = '$self->{pidfile}'\n";
 
         # SSL settings
         my $ssl_mode = lc($self->{ssl_mode} // 'off');
         if ($ssl_mode ne 'off') {
             print $fh "ssl = on\n";
-            print $fh "ssl_ca_file = '$self->{ssl_ca}'\n"       if $self->{ssl_ca};
-            print $fh "ssl_cert_file = '$self->{ssl_cert}'\n"   if $self->{ssl_cert};
-            print $fh "ssl_key_file = '$self->{ssl_key}'\n"     if $self->{ssl_key};
+            print $fh "ssl_ca_file = '$self->{ssl_ca}'\n"     if $self->{ssl_ca};
+            print $fh "ssl_cert_file = '$self->{ssl_cert}'\n" if $self->{ssl_cert};
+            print $fh "ssl_key_file = '$self->{ssl_key}'\n"   if $self->{ssl_key};
         } else {
             print $fh "ssl = off\n";
         }
 
-        # If user supplied a config file, append its contents
+        # User-supplied config file
         if ($self->{config} && -r $self->{config}) {
             print $fh "\n# === User-supplied TAF config ===\n";
             if (open(my $ufh, '<', $self->{config})) {
                 while (my $line = <$ufh>) {
-                    # Skip port/listen/ssl/socket-dir — already written above
-                    next if $line =~ /^\s*(port|listen_addresses|ssl|unix_socket_directories)\s*=/i;
+                    next if $line =~ /^\s*(port|listen_addresses|ssl|unix_socket_directories|external_pid_file)\s*=/i;
                     print $fh $line;
                 }
                 close $ufh;
                 PrintVerbose("$_tag Appended user config: $self->{config}");
             }
-        } else {
-            # Write safe benchmark defaults when no user config supplied
+        }
+        else {
+            # Safe benchmark defaults
             print $fh "\n# === TAF benchmark defaults ===\n";
             print $fh "shared_buffers = 256MB\n";
             print $fh "work_mem = 4MB\n";
@@ -838,7 +874,9 @@ sub _db_apply_postgresql_conf {
         }
 
         close $fh;
-    } else {
+
+    } 
+    else {
         PrintError("$_tag Cannot open postgresql.conf for writing: $pg_conf");
         return ERROR;
     }
@@ -903,29 +941,11 @@ sub _db_write_pg_hba_conf {
 }
 
 ################################################################################
-################################################################################
-# _os_prefix
-#
-# PURPOSE:
-#     Return the command prefix needed to run a command as the postgres OS user
-#     when TAF is executing as root. Returns an empty list when not root or
-#     when the postgres OS user could not be resolved.
-#
-# USAGE:
-#     my @cmd = ($self->_os_prefix(), $binary, @args);
-################################################################################
-sub _os_prefix {
-    my ($self) = @_;
-    return () unless $self->{is_root} && $self->{os_user};
-    return ('runuser', '-u', $self->{os_user}, '--');
-}
-
 # _db_prepare_data_dir
 #
 # PURPOSE:
 #     Ensure the data directory is empty and ready for initdb. Removes any
-#     existing content. Creates the directory fresh. When running as root,
-#     also chowns the directory to the postgres OS user so initdb can write it.
+#     existing content and creates the directory fresh.
 ################################################################################
 sub _db_prepare_data_dir {
     my ($self) = @_;
@@ -945,34 +965,9 @@ sub _db_prepare_data_dir {
         return ERROR;
     };
 
-    # When running as root, hand ownership to the postgres OS user so initdb
-    # and pg_ctl can read and write the cluster directory. Also chown tmpdir
-    # and runtime_dir, since the socket, pidfile, and log paths pg_ctl/postgres
-    # open themselves live there -- and runtime_dir (db_runtime_dir) can be a
-    # directory distinct from tmpdir. Recursive, not just the directory
-    # itself: unlike data_dir (wiped and recreated from scratch above),
-    # tmpdir/runtime_dir persist across attempts, so a prior run's
-    # pidfile/log/socket (created before this fix existed, or by a run that
-    # failed before reaching this chown) can already exist there owned by
-    # root -- a non-recursive chown leaves those files unwritable by
-    # 'postgres', and pg_ctl/postgres fail outright when they can't
-    # create/write their own runtime files.
-    if ($self->{is_root} && defined $self->{os_uid}) {
-        chown($self->{os_uid}, $self->{os_gid}, $dir)
-            or PrintWarning("_db_prepare_data_dir: chown $dir to $self->{os_user} failed: $!");
-        if ($self->{tmpdir} && -d $self->{tmpdir}) {
-            system('chown', '-R', "$self->{os_uid}:$self->{os_gid}", $self->{tmpdir}) == 0
-                or PrintWarning("_db_prepare_data_dir: recursive chown of tmpdir failed (exit " . ($? >> 8) . ")");
-        }
-        if ($self->{runtime_dir} && -d $self->{runtime_dir}
-                && $self->{runtime_dir} ne $self->{tmpdir}) {
-            system('chown', '-R', "$self->{os_uid}:$self->{os_gid}", $self->{runtime_dir}) == 0
-                or PrintWarning("_db_prepare_data_dir: recursive chown of runtime_dir failed (exit " . ($? >> 8) . ")");
-        }
-    }
-
     return OK;
 }
+
 
 ################################################################################
 # _db_validate_binaries
@@ -1091,8 +1086,7 @@ sub _pg_ctl_status {
 
     # pg_ctl status: -q is not valid for all pg_ctl versions (e.g. PG 11).
     # Suppress output by redirecting through the shell instead.
-    my $cmd = join(' ', ($self->_os_prefix()), $pg_ctl, 'status', "-D", $data_dir, '>/dev/null 2>&1');
-    $cmd = "cd /tmp && $cmd" if $self->{is_root};
+    my $cmd = join(' ', $pg_ctl, 'status', "-D", $data_dir, '>/dev/null 2>&1');
     my $rc = system($cmd);
     return ($rc == 0) ? 0 : 1;
 }
@@ -1144,14 +1138,6 @@ sub _run_command {
     my $_tag = "${_me}::_run_command($tag): ";
 
     my $cmd_str = join(' ', @$cmd_ref);
-
-    # runuser (invoked via _os_prefix() when running as root) fails outright
-    # if it cannot stat/chdir back to the shell's current working directory,
-    # even though that directory is never actually used by postgres/pg_ctl --
-    # TAF's own working directory is commonly a root-owned checkout (e.g.
-    # /root/taf), which the target OS user has no traversal rights into.
-    # /tmp is always world-traversable, so hop there first to sidestep it.
-    $cmd_str = "cd /tmp && $cmd_str" if $self->{is_root};
 
     if ($logfile) {
         if (open(my $fh, '>>', $logfile)) {

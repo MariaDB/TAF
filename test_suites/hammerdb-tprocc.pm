@@ -2,8 +2,8 @@
 # hammerdb-tprocc.pm - HammerDB TPROCC Test Suite for TAF
 #
 # Created: October 2025
-# Last Modified: July 2026
-# Version: 2.1
+# Last Modified: August 2026
+# Version: 4.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -98,12 +98,12 @@
 ## Metadata
 ## --------------------------------------------------------------------------
 our $properties_prefix = "hammerdb_tprocc";
-our $ts_version        = 2;
+our $ts_version        = 4;
 our $ts_revision       = 0;
 
 # Additional metadata (example placeholders, expand as needed)
 our $ts_type           = "benchmark";
-our $client_version    = "HammerDB-5.0";
+our $client_version    = "HammerDB-6.0";
 
 # Defaults file
 my $TS_defaults_file = $Bin . "/properties/default/hammerdb_tprocc_default.properties";
@@ -114,6 +114,9 @@ our @legalTests   = (@defaultTests);
 
 # Test Suite hammerdb_tprocc properties/options
 our %tsOpt = (
+    # Hammerdb *.db in tmp
+    always_recreate_hammerdb_state => undef,
+    hammerdb_state_dir             => undef,
     # Agent
     agent                 => undef,
     agent_port            => undef,
@@ -359,6 +362,10 @@ sub PreTestSetup {
     if (defined $tsOpt{db_type} && lc($tsOpt{db_type}) eq "mariadb") {
         $tsOpt{db_type} = "maria";
     }
+
+    # Remove hammder db state db's in tmp from previous runs if the past metrics
+    # and job id info is not needed to save space. 
+    ResetHammerdbState();
 
     $tsState{pre_test_done} = TRUE;
     StageEnd($_pts);
@@ -3792,23 +3799,13 @@ sub WriteTproccPostgresConfig {
     #---------------------------------------------------------------------
     # Connection dictionary
     #---------------------------------------------------------------------
-    # $options{host} is the *reporting* hostname (GetHostName() resolves
-    # "localhost" to the machine's real hostname for archive/result naming,
-    # e.g. "taf-clean") -- not a connection target. HammerDB's PostgreSQL
-    # dictionary has no pg_socket key (only TCP), and postgres.pm's
-    # pg_hba.conf only ever allows 127.0.0.1/::1 for a TAF-managed instance,
-    # so connecting to the resolved real hostname instead of loopback fails
-    # with "no pg_hba.conf entry for host ..." on any machine whose hostname
-    # isn't itself an alias for localhost (works by accident, not by design,
-    # wherever it happens to be).
-    print $fh "diset connection pg_host \"127.0.0.1\"\n";
+    my $pg_host =
+        ($options{host} eq 'localhost') ? '127.0.0.1'
+                                        : $options{host};
+
+    print $fh "diset connection pg_host \"$pg_host\"\n";
     print $fh "diset connection pg_port $options{db_port}\n";
 
-    # Superuser used by HammerDB's schema-build/delete Monitor VU -- without
-    # this, HammerDB falls back to its own default pg_superuser/pg_superuserpass
-    # ("postgres"/"postgres"), which does not match TAF's configured root
-    # password and makes the Monitor VU fail with "password authentication
-    # failed for user postgres" during buildschema/deleteschema.
     print $fh "diset tpcc pg_superuser \"$options{db_root_user}\"\n"
         if $options{db_root_user};
     print $fh "diset tpcc pg_superuserpass \"$options{db_root_pass}\"\n"
@@ -3911,6 +3908,59 @@ sub NormalizeDBType {
     return "postgres" if $t =~ /^(postgres|postgresql)$/;
 
     return $t;  # fallback for future engines
+}
+
+###############################################################################
+# HammerDB State Reset
+#
+# PURPOSE:
+#     Remove stale HammerDB internal SQLite databases before a new run.
+#     HammerDB uses these .db files at runtime when metric collectors are
+#     enabled (JSON and HTML). TAF consumes only the metrics produced during
+#     the current run and does not use historical HammerDB state.
+#
+# WHY:
+#     - Prevents schema conflicts across HammerDB versions (for example,
+#       upgrading from 5.0 to 6.0).
+#     - Ensures a clean environment for TPROC-C and TPROC-H workloads.
+#     - Reduces disk usage for production test setups.
+#     - Avoids contamination from previous runs.
+#
+# PROPERTIES:
+#     always_recreate_hammerdb_state
+#         Boolean. If true, remove all *.db files from hammerdb_state_dir
+#         before starting a test suite. Default: true.
+#
+#     hammerdb_state_dir
+#         Directory containing HammerDB internal SQLite databases.
+#         Default: /tmp/
+#
+# NOTES:
+#     - TAF extracts metrics from JSON and HTML only when collectors are
+#       enabled in the test suite properties. Collectors are off (false)
+#       by default.
+#     - Past HammerDB .db files are not used by TAF. Only the metrics
+#       generated during the current run are consumed.
+#     - Users who want HammerDB to retain historical test data should set
+#       default always_recreate_hammerdb_state to false. (both tproc c and h)
+###############################################################################
+sub ResetHammerdbState {
+
+    return unless $tsOpt{always_recreate_hammerdb_state};
+    
+    my $_reset = StageStart($_me." -> ResetHammerdbState ->");
+    PrintVerbose($_reset." Removing hammerdb state db's from ".$tsOpt{hammerdb_state_dir});
+
+    my $dir = $tsOpt{hammerdb_state_dir} // '/tmp/';
+    opendir(my $dh, $dir) or return;
+
+    while (my $f = readdir($dh)) {
+        next unless $f =~ /\.(db|DB)$/;
+        unlink("$dir/$f");
+    }
+
+    closedir($dh);
+    StageEnd($_reset);
 }
 
 #############################################################################

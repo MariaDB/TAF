@@ -3,7 +3,7 @@ package reporter_libs::csv;
 # reporter_libs::csv
 #
 # Created: December 2025
-# Last Modified: January 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -70,7 +70,6 @@ package reporter_libs::csv;
 use strict;
 use warnings;
 use Exporter 'import';
-use Text::CSV;
 use File::Spec;
 use File::Path qw(make_path);
 
@@ -78,6 +77,16 @@ our @EXPORT_OK = qw(GenerateResults);
 
 sub GenerateResults {
     my ($resultsRef, $outputFile, $outputDir) = @_;
+
+    # Try to load Text::CSV at runtime
+    eval {
+        require Text::CSV;
+        Text::CSV->import();
+        1;
+    } or do {
+        print("ERROR: csv reporter: Missing dependency Text::CSV\n");
+        return 0;   # fail cleanly, dispatcher moves on
+    };
 
     # Ensure output directory exists
     unless (-d $outputDir) {
