@@ -3,7 +3,7 @@ package TAF::CommandLine;
 # TAF::CommandLine
 #
 # Created: December 2025
-# Last Modified: July 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -49,6 +49,7 @@ package TAF::CommandLine;
 #       names and structure.
 #     - Any new CLI option must be added here and documented in the TAF usage.
 #############################################################################
+our $VERSION = '4.0';
 #===============================================================================
 #                            Imports
 #===============================================================================
@@ -74,8 +75,6 @@ BEGIN {
 
 use TAF::Utilities;
 require toolsLib;
-
-our $VERSION = '3.1';
 
 #===============================================================================
 #                          Exported functions
@@ -174,6 +173,7 @@ sub ParseCommandLineOptions {
         "restore-image-format"          => \$tmp_ref->{restore_image_format},
         "threads:s"                     => \$tmp_ref->{threads},
         "tests:s"                       => \$tmp_ref->{tests},
+        "test-case-tag:s"               => \$tmp_ref->{test_case_tag},
         "test-setup-mode:s"             => \$tmp_ref->{test_setup_mode},
         "test-type:s"                   => \$tmp_ref->{test_type},
         "use-request-based"             => \$tmp_ref->{use_request_based},
@@ -333,6 +333,7 @@ sub ParseCommandLineOptions {
         # Debug / tooling
         #-----------------------------------------------------------------------
         "tools-debug"                 => \$tmp_ref->{tools_debug},
+        "dump-run-state"              => \$tmp_ref->{dump_run_state},
 
         #-----------------------------------------------------------------------
         # Info & commandline flags/options

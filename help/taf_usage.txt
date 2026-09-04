@@ -276,6 +276,16 @@ Note: setup-client
                    : Skip TestSuiteCleanup.
                    : Default(false)
 
+   O = --test-case-tag=<type>
+   P = taf.test_case_tag=<type>
+                   : Free form tag for users to help describe the test run
+                   : Tag is printed into each test iteration's readme.txt
+                   : In addition, TAG is reported in many of the report plugins to incude 
+                   # if using TAF Backend, it is placed in the
+                   : test runs record's "tag" field for quering.
+                   : Example: MDEV1234_BASELINE, ISOLATION_RC_THREADPOOL, BIN_LOG_OFF
+                   : Default(null)
+
    O = --test-type=<type>
    P = taf.test_type=<type>
                    : Type of testing being done.
@@ -868,6 +878,15 @@ Note: setup-client
    P = taf.tools_debug={false/true}
                    : Enable debug output.
                    : Default(false)
+
+   O = --dump-run-state
+   P = taf.dump_run_state={false|true}
+                   : Enable dumping of the fully resolved TAF configuration.
+                   : Output is written to a text file.
+                   : Filename: taf_run_state_dump_YYYYMMDD_HHMMSS.txt
+                   : File is stored in reports directory during run, and archived with results.
+                   : Default(false)
+
 
    O = --help
                    : Print this usage.

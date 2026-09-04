@@ -3,7 +3,7 @@
 # ResultsCompareTprochRaw.pl
 #
 # Created: January 2026
-# Last Modified: January 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -71,21 +71,16 @@
 #       reflected in this header and in the TAF documentation.
 #     - Designed to be idempotent and safe to re-run on the same inputs.
 #############################################################################
+
 use strict;
 use warnings;
-use lib '../libs';
-use strict;
-use warnings;
-use lib '../libs';
+
 
 use File::Spec;
 use Cwd 'abs_path';
 use File::Basename;
 use FindBin;
 use lib "$FindBin::Bin/../libs";
-
-use reporter_libs::_taf_paths qw(resolve_config_path);
-
 
 die "Usage: $0 file1.raw.txt file2.raw.txt ... output_dir [basename]\n"
     if @ARGV < 3;
@@ -102,7 +97,7 @@ if (-d $basename) {
 
 my @input_files = @ARGV;
 
-# ---------------------------------------------------------------------------
+#############################################################################
 # TAF LOADER: load_raw_results()
 # ---------------------------------------------------------------------------
 # Purpose:
@@ -140,7 +135,7 @@ sub load_raw_results {
 
     my $code = substr($raw, $start);
 
-    # Strip Dumper alias noise like: $VAR1->[0]{"metrics"}[0],
+    # Remove Dumper alias noise
     $code =~ s/^\s*\$VAR1->.*?,\s*$//mg;
 
     my ($results, $eval_err);
@@ -162,42 +157,26 @@ sub load_raw_results {
 # Purpose:
 #   Parse one dataset of TPROCH raw results and derive all comparison-ready
 #   structures needed by the HTML reporter.
-#
-# Responsibilities:
-#   - Collect per-query values across all iterations.
-#   - Compute per-query averages (Q1..Qn).
-#   - Extract system, database, and test metadata from the first iteration.
-#   - Resolve database config file paths and embed config contents.
-#   - Infer iteration count from CLI, iteration_id fields, or result count.
-#   - Parse suite-specific settings from the TAF commandline.
-#
-# Returns:
-#   (
-#     label,          # "Maker Version" string for dataset column headers
-#     avgref,         # hashref: qid => average seconds
-#     qvalsref,       # hashref: qid => [v1, v2, ...]
-#     sysref,         # system metadata hashref
-#     dbref,          # database metadata hashref
-#     testref,        # test metadata hashref
-#     suiteref        # suite-specific settings hashref
-#   )
-#
-# Notes:
-#   - Query metrics must match /^Query(\d+)$/ to be included.
-#   - Non-numeric or missing values are ignored.
-#   - Config resolution uses shared TAF path helpers for consistency.
-#   - Designed to be deterministic and contributor-proof.
+# NEW ARCHITECTURE:
+#     - NO file-based config resolution.
+#     - NO resolve_config_path().
+#     - NO db_config_file, db_config_run_file, etc.
+#     - ONLY metadata-driven config:
+#           canonical_config  = db_config_contents
+#           raw_config        = raw_db_config_block
 # ---------------------------------------------------------------------------
 sub extract_tproch_summary {
     my ($results) = @_;
 
-    my %query_values;   # qid => [v1, v2, ...]
+    my %query_values;
     my $meta = $results->[0]{metadata} // {};
 
+    # Dataset label
     my $maker   = ucfirst($meta->{database_maker} // "unknown");
     my $version = $meta->{database_version} // "";
     my $label   = $version ne "" ? "$maker $version" : $maker;
 
+    # Collect per-query values
     foreach my $run (@$results) {
         next unless ref $run->{metrics} eq 'ARRAY';
         foreach my $m (@{ $run->{metrics} }) {
@@ -209,6 +188,7 @@ sub extract_tproch_summary {
         }
     }
 
+    # Compute averages
     my %avg;
     foreach my $qid (sort { $a <=> $b } keys %query_values) {
         my @vals = @{ $query_values{$qid} };
@@ -216,40 +196,33 @@ sub extract_tproch_summary {
         $avg{$qid} = @vals ? $sum / @vals : 0;
     }
 
-    # Metadata extraction
-    my $cmdline = $meta->{taf_commandline} // '';
+    # Canonical + raw DB config (metadata-only)
+    my $canon_cfg = $meta->{db_config_contents}
+                    // '[no canonical DB config]';
 
-    my ($dbconfig_cli)  = $cmdline =~ /taf\.db_config_file=([^ ]+)/;
-    my ($cli_iters)     = $cmdline =~ /taf\.iterations=(\d+)/;
+    my $raw_cfg   = $meta->{raw_db_config_block}
+                    // '[no raw DB config block]';
 
-    my $dbconfig = $meta->{db_config_file} // $dbconfig_cli // 'unknown';
+    # Canonical + raw properties
+    my $canon_props = $meta->{generated_properties_file_contents}
+                      // '[no canonical properties]';
 
-    # Resolve config path via shared helper
-    my $resolved_config_path = resolve_config_path($dbconfig);
+    my $raw_props   = $meta->{raw_properties_block}
+                      // '[no raw properties block]';
 
-    # Read config contents
-    my $config_contents = '';
-    if ($dbconfig ne 'unknown' && defined $resolved_config_path && -f $resolved_config_path) {
-        open my $cfh, '<', $resolved_config_path;
-        local $/;
-        $config_contents = <$cfh>;
-        close $cfh;
-    } else {
-        $config_contents = "[config file not found or inaccessible]";
-    }
+    # Literal commandline
+    my $cmd_literal = $meta->{taf_commandline_literal}
+                      // '[no literal commandline]';
 
     # Iteration logic
-    my $count_iters = scalar @$results;
-
     my $last_iter_id = 0;
     foreach my $r (@$results) {
-        my $id = $r->{iteration_id} // 0;
+        my $id = $r->{iteration_id} // $r->{metadata}{iteration} // 0;
         $last_iter_id = $id if $id > $last_iter_id;
     }
+    my $iterations = $last_iter_id || scalar(@$results);
 
-    my $iterations = $cli_iters // $last_iter_id || $count_iters;
-
-    # System info
+    # System metadata
     my %sys = (
         host         => $meta->{test_host}        // 'unknown',
         cpu          => $meta->{cpu}              // 'unknown',
@@ -261,17 +234,27 @@ sub extract_tproch_summary {
         disk         => $meta->{disk}             // 'unknown',
     );
 
-    # Database info
+    # Database metadata (metadata-only)
     my %db = (
         dbmaker         => ucfirst($meta->{database_maker} // 'unknown'),
         dbversion       => $meta->{database_version} // 'unknown',
         dbeng           => $meta->{database_eng}     // 'unknown',
         dbdir           => $meta->{db_install_dir}   // 'unknown',
-        dbconfig        => $dbconfig,
-        config_contents => $config_contents,
+    
+        # For old reporters that expect these:
+        dbconfig        => $meta->{db_config_source_file}
+                           // $meta->{db_config_file}
+                           // 'unknown',
+    
+        config_contents => $meta->{db_config_contents}
+                           // '[no DB config contents]',
+    
+        # New fields (if you want them too):
+        canonical_config => $canon_cfg,
+        raw_config       => $raw_cfg,
     );
 
-    # Test info
+    # Test metadata
     my %test = (
         suite           => $meta->{test_suite}       // 'unknown',
         testname        => $meta->{test_name}        // 'unknown',
@@ -283,14 +266,18 @@ sub extract_tproch_summary {
         trickle_refresh => $meta->{trickle_refresh}  // 'unknown',
         update_sets     => $meta->{update_sets}      // 'unknown',
         timestamp       => $meta->{timestamp}        // 'unknown',
+
+        canonical_properties    => $canon_props,
+        raw_properties          => $raw_props,
+        taf_commandline_literal => $cmd_literal,
     );
 
-    # Suite-specific settings from commandline
+    # Suite-specific settings
     my $suite_raw = $test{suite} // '';
     (my $suite_prefix = $suite_raw) =~ s/-/_/g;
 
     my %suite_settings;
-    while ($cmdline =~ /\b\Q$suite_prefix\E\.([A-Za-z0-9_]+)=([^ ]+)/g) {
+    while ($cmd_literal =~ /\b\Q$suite_prefix\E\.([A-Za-z0-9_]+)=([^ ]+)/g) {
         $suite_settings{$1} = $2;
     }
 
@@ -624,41 +611,19 @@ foreach my $key (@sys_keys) {
 print $fh "</table>\n";
 
 # ---------------------------------------------------------------------------
-# TAF REPORTER: Database Info Table
+# TAF REPORTER: Database Info Table (NEW ARCHITECTURE)
 # ---------------------------------------------------------------------------
 # PURPOSE:
-#   Render a per-dataset database metadata table, exposing all DB-related
-#   attributes required for forensic comparison of TPROCH results. This
-#   includes maker, version, engine, install directory, config file path,
-#   and the fully inlined contents of the resolved configuration file.
-#
-# ARCHITECTURAL ROLE:
-#   - Acts as the database-environment disclosure layer of the report.
-#   - Ensures each dataset exposes the same canonical DB fields used across
-#     TAF reporters and benchmarking tools.
-#   - Embeds config file contents directly in the HTML to guarantee that
-#     configuration differences are visible without external files.
-#   - Provides a stable, column-aligned structure for cross-version and
-#     cross-maker comparisons.
-#
-# WHAT THIS BLOCK DOES NOT DO:
-#   - Does not validate correctness of DB configuration values.
-#   - Does not infer missing metadata or attempt to repair invalid paths.
-#   - Does not normalize or interpret config file semantics.
-#   - Does not perform any cross-dataset compatibility checks.
-#
-# CONTRACT:
-#   - Each dataset must provide a 'db' hashref with the expected keys.
-#   - Missing or empty values must be rendered as 'unknown'.
-#   - Config file contents must be HTML-escaped and line-broken safely.
-#   - Table column ordering must match dataset ordering in @all_sets.
+#   Render per-dataset database metadata using the new metadata-only config
+#   architecture. Canonical config contents are taken directly from metadata
+#   (db_config_contents) and rendered multi-line for readability.
 #
 # GUARANTEES:
 #   - All DB fields are displayed uniformly across datasets.
-#   - Config contents are always embedded, even when missing or unreadable.
-#   - No silent omissions; every key in @db_keys is rendered.
-#   - Output HTML is deterministic, ASCII-safe, and contributor-proof.
+#   - Config contents are always embedded, never omitted.
+#   - Multi-line formatting is deterministic and ASCII-safe.
 # ---------------------------------------------------------------------------
+
 print $fh "<h3>Database Info (per dataset)</h3>\n<table>\n<tr><th>Property</th>";
 
 foreach my $set (@all_sets) {
@@ -666,15 +631,16 @@ foreach my $set (@all_sets) {
 }
 print $fh "</tr>\n";
 
-my @db_keys = qw(dbmaker dbversion dbeng dbdir dbconfig);
+# New canonical DB keys
+my @db_keys = qw(dbmaker dbversion dbeng dbdir);
 my %db_labels = (
     dbmaker   => 'Database Maker',
     dbversion => 'Database Version',
     dbeng     => 'Engine',
     dbdir     => 'Install Dir',
-    dbconfig  => 'Config File',
 );
 
+# Render simple DB fields
 foreach my $key (@db_keys) {
     print $fh "<tr><td>$db_labels{$key}</td>";
     foreach my $set (@all_sets) {
@@ -685,20 +651,25 @@ foreach my $key (@db_keys) {
     print $fh "</tr>\n";
 }
 
-# Config contents row
+# Render config contents (canonical_config) multi-line
 print $fh "<tr><td>Config Contents</td>";
-foreach my $set (@all_sets) {
-    my $raw = $set->{db}{config_contents} // '';
-    $raw =~ s/&/&amp;/g;
-    $raw =~ s/</&lt;/g;
-    $raw =~ s/>/&gt;/g;
-    $raw =~ s/\r//g;
-    $raw =~ s/\n/<br>/g;
-    print $fh "<td style=\"font-size:smaller;\">$raw</td>";
-}
-print $fh "</tr>\n";
 
-print $fh "</table>\n";
+foreach my $set (@all_sets) {
+
+    my $cfg = $set->{db}{canonical_config} // '[no DB config contents]';
+
+    # Convert pipe-separated canonical config into multi-line
+    $cfg =~ s/\|/\n/g;
+
+    # HTML escape
+    $cfg =~ s/&/&amp;/g;
+    $cfg =~ s/</&lt;/g;
+    $cfg =~ s/>/&gt;/g;
+
+    print $fh "<td style=\"font-size:smaller; white-space:pre-wrap;\">$cfg</td>";
+}
+
+print $fh "</tr>\n</table>\n";
 
 # ---------------------------------------------------------------------------
 # TAF REPORTER: Test Info Table

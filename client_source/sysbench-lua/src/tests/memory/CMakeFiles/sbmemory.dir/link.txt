@@ -1,2 +1,0 @@
-/usr/bin/ar qc libsbmemory.a CMakeFiles/sbmemory.dir/sb_memory.c.o
-/usr/bin/ranlib libsbmemory.a

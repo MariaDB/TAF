@@ -3,7 +3,7 @@ package reporter_libs::tproch_queries_chart;
 # reporter_libs::tproch_queries_chart
 #
 # Created: December 2025
-# Last Modified: January 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -24,20 +24,21 @@ package reporter_libs::tproch_queries_chart;
 # Licensed under the GNU General Public License, version 2 or later (GPLv2+).
 # See https://www.gnu.org/licenses/ for details.
 #
-#
 # PURPOSE:
-#     Generate a Chart.js visualization of TPROCH per-query benchmark results.
-#     This plugin aggregates per-query metrics across all iterations and
-#     produces a single HTML file showing average execution time for each
-#     QueryN metric discovered in the dataset.
+#     Generate an HTML report for TPROCH-style runs showing:
+#         - Chart.js bar chart of average QueryN times
+#         - System metadata
+#         - Database metadata (including DB config origin/source/run file)
+#         - Test metadata (including key suite settings)
+#         - Per-iteration QueryN values
 #
 # ARCHITECTURAL ROLE:
 #     - Implements the GenerateResults() interface required by TAF::Reports.
 #     - Scans all metrics for keys matching the pattern "QueryN".
 #     - Aggregates values across all runs and computes per-query averages.
 #     - Produces a deterministic HTML file containing a single bar chart.
-#     - Uses lowercase-only metadata fields as defined by the TAF metadata
-#       normalization contract (though this plugin relies only on metrics).
+#     - Uses normalized metadata fields as defined by the TAF metadata
+#       normalization contract.
 #
 # WHAT THIS MODULE DOES NOT DO:
 #     - Does not compute extended statistics (percentiles, skewness, etc.).
@@ -72,117 +73,151 @@ use lib "$FindBin::Bin/..";
 
 use Exporter 'import';
 use File::Spec;
-use reporter_libs::_taf_paths qw(resolve_config_path);
 
 our @EXPORT_OK = qw(GenerateResults);
 
+#############################################################################
+# parse_config_kv
+#
+# PURPOSE:
+#     Parse canonical DB config contents (pipe or newline separated) into
+#     a normalized key=value hash.
+#############################################################################
+sub parse_config_kv {
+    my ($text) = @_;
+    my %kv;
+
+    for my $line (split /\n/, $text) {
+        next if $line =~ /^\s*$/;
+
+        # Case 1: key=value
+        if ($line =~ /^\s*([^=]+?)\s*=\s*(.*?)\s*$/) {
+            my ($k,$v) = (lc $1, $2);
+            $kv{$k} = $v;
+            next;
+        }
+
+        # Case 2: pipe-separated canonical block: k1=v1|k2=v2|...
+        if ($line =~ /\|/) {
+            for my $pair (split /\|/, $line) {
+                next if $pair =~ /^\s*$/;
+                if ($pair =~ /^\s*([^=]+?)\s*=\s*(.*?)\s*$/) {
+                    my ($k,$v) = (lc $1, $2);
+                    $kv{$k} = $v;
+                }
+            }
+            next;
+        }
+
+        # Case 3: bare directive (boolean flag)
+        if ($line =~ /^\s*([A-Za-z0-9_\-]+)\s*$/) {
+            my $k = lc $1;
+            $kv{$k} = '__FLAG__';
+            next;
+        }
+    }
+
+    return \%kv;
+}
+
+#-----------------------------------------------------------------------------
+# GenerateResults
+#
+# PURPOSE:
+#     Orchestrate the full HTML report generation pipeline for the
+#     chart+test-info reporter. This includes:
+#         - metadata extraction
+#         - dataset normalization
+#         - config file resolution
+#         - per-thread aggregation
+#         - extended statistics
+#         - Chart.js dataset construction
+#         - HTML rendering (system, database, test info, results tables)
+#
+# ARCHITECTURAL ROLE:
+#     - Acts as the top-level rendering function for this reporter.
+#     - Normalizes heterogeneous result entries into a unified structure.
+#     - Produces deterministic, contributor-proof HTML output.
+#
+# CONTRACT:
+#     - $resultsRef must be an arrayref of normalized result entries.
+#     - $filename and $outputDir must be defined.
+#
+# GUARANTEES:
+#     - Output HTML is deterministic and stable for diffing.
+#     - Missing metadata fields fall back to safe defaults.
+#-----------------------------------------------------------------------------
 sub GenerateResults {
     my ($resultsRef, $filename, $outputDir) = @_;
 
     my $output_path = File::Spec->catfile($outputDir, "$filename.html");
 
-    my $comment = $resultsRef->[0]{metadata}{comments} // '';
+    my $meta    = $resultsRef->[0]{metadata} // {};
+    my $comment = $meta->{comments} // '';
     $comment =~ s/\s+/ /g;
 
     # -------------------------------------------------------------------------
     # TAF BLOCK: Metadata Extraction
-    #
-    # PURPOSE:
-    #     Extract core metadata fields from the first result entry. These fields
-    #     populate the System Info, Database Info, and Test Info tables.
-    #
-    # ARCHITECTURAL ROLE:
-    #     - Acts as the metadata normalization layer for this reporter.
-    #     - Ensures all downstream HTML sections receive stable values.
-    #
-    # WHAT THIS BLOCK DOES NOT DO:
-    #     - Does not validate metadata correctness.
-    #     - Does not infer missing metadata beyond "unknown".
-    #
-    # CONTRACT:
-    #     - $resultsRef->[0]{metadata} must exist and be a hashref.
-    #
-    # GUARANTEES:
-    #     - All missing fields fall back to "unknown".
     # -------------------------------------------------------------------------
-    my $meta = $resultsRef->[0]{metadata} // {};
-
     my $host         = $meta->{test_host}        // 'unknown';
     my $cpu          = $meta->{cpu}              // 'unknown';
     my $cpu_count    = $meta->{cpu_count}        // 'unknown';
     my $core_count   = $meta->{core_count}       // 'unknown';
     my $socket_count = $meta->{socket_count}     // 'unknown';
     my $os           = $meta->{os}               // 'unknown';
-    my $ram          = $meta->{ram}              // 'unknown';
+    my $ram          = $meta->{ram}             // 'unknown';
 
-    my $dbmaker      = $meta->{database_maker}   // 'unknown';
-    my $dbversion    = $meta->{database_version} // 'unknown';
-    my $dbeng        = $meta->{database_eng}     // 'unknown';
-    my $dbdir        = $meta->{db_install_dir}   // 'unknown';
+    # Database metadata
+    my $dbmaker        = $meta->{database_maker}       // 'unknown';
+    my $dbversion      = $meta->{database_version}     // 'unknown';
+    my $dbeng          = $meta->{database_eng}         // 'unknown';
+    my $dbdir          = $meta->{db_install_dir}       // 'unknown';
 
-    my $suite        = $meta->{test_suite}       // 'unknown';
-    my $testname     = $meta->{test_name}        // 'unknown';
-    my $timestamp    = $meta->{timestamp}        // 'unknown';
-    my $duration     = $meta->{duration}         // 'unknown';
+    my $dbconfig_origin = $meta->{db_config_origin}      // 'unknown';
+    my $dbconfig_source = $meta->{db_config_source_file} // 'unknown';
+    my $dbconfig_run    = $meta->{db_config_run_file}    // 'unknown';
+    my $dbconfig_id     = $dbconfig_source;
 
-    # -------------------------------------------------------------------------
-    # TAF BLOCK: Commandline, Config, Suite Settings, Iteration Count
-    #
-    # PURPOSE:
-    #     Extract suite-specific settings, resolve config file paths, and
-    #     compute total iteration count.
-    #
-    # ARCHITECTURAL ROLE:
-    #     - Provides the configuration disclosure layer for the report.
-    #     - Ensures suite-specific settings are visible and deterministic.
-    #
-    # WHAT THIS BLOCK DOES NOT DO:
-    #     - Does not validate config file syntax.
-    #     - Does not interpret suite-specific settings semantically.
-    #
-    # CONTRACT:
-    #     - taf_commandline must be present if suite-specific settings exist.
-    #
-    # GUARANTEES:
-    #     - Missing config files produce a safe placeholder.
-    #     - Iteration count is computed deterministically.
-    # -------------------------------------------------------------------------
-    my $cmdline = $meta->{taf_commandline} // '';
-
-    # Split literal command line from merged properties
-    my ($literal, $props) = split /:: prop file contents ->/, $cmdline, 2;
-
-    my $dbconfig;
-
-    # 1. Command line override (highest precedence)
-    if ($literal =~ /--db-config-file=([^ ]+)/) {
-        $dbconfig = $1;
-    # 2. User properties (second precedence)
-    } elsif (defined $props && $props =~ /taf\.db_config_file=([^ ]+)/) {
-        $dbconfig = $1;
-    # 3. Metadata fallback
-    } else {
-        $dbconfig = $meta->{db_config_file} // 'unknown';
+    # Normalize DB config contents using parse_config_kv
+    my $raw_cfg = $meta->{db_config_contents} // '';
+    my $kv = parse_config_kv($raw_cfg);
+    
+    my @pairs;
+    foreach my $k (sort keys %$kv) {
+        my $v = $kv->{$k};
+        push @pairs, "$k=$v";
     }
+    
+    my $config_contents = @pairs ? join('|', @pairs) : '[no DB config contents]';
+    # Convert pipe‑joined canonical config into separate lines
+    $config_contents =~ s/\|/\n/g;
 
-    my $resolved_cfg = resolve_config_path($dbconfig);
-    my $config_contents = "[config file not found or inaccessible]";
+    # Test metadata
+    my $suite     = $meta->{test_suite}        // 'unknown';
+    my $testname  = $meta->{test_name}         // 'unknown';
+    my $timestamp = $meta->{timestamp}         // 'unknown';
+    my $duration  = $meta->{run_duration_seconds} // $meta->{duration} // 'unknown';
 
-    if ($dbconfig ne 'unknown' && defined $resolved_cfg && -f $resolved_cfg) {
-        open my $cfh, '<', $resolved_cfg;
-        local $/;
-        $config_contents = <$cfh>;
-        close $cfh;
-    }
+    my $scale              = $meta->{scale}              // 'unknown';
+    my $threads            = $meta->{threads}            // 'unknown';
+    my $test_case_tag      = $meta->{test_case_tag}      // 'unknown';
+    my $test_client_version= $meta->{test_client_version}// 'unknown';
+    my $checksum_after_run    = $meta->{checksum_after_run}    // 'unknown';
+    my $checksum_after_setup  = $meta->{checksum_after_setup}  // 'unknown';
 
+    my $cmd_literal = $meta->{taf_commandline_literal}
+                      // '';
+
+    # suite-specific settings from literal commandline
     my $suite_raw = $suite // '';
     (my $suite_prefix = $suite_raw) =~ s/-/_/g;
 
     my %suite_settings;
-    while ($cmdline =~ /\b\Q$suite_prefix\E\.([A-Za-z0-9_]+)=([^ ]+)/g) {
+    while ($cmd_literal =~ /\b\Q$suite_prefix\E\.([A-Za-z0-9_]+)=([^ ]+)/g) {
         $suite_settings{$1} = $2;
     }
 
+    # Iteration count
     my $iterations = 0;
     foreach my $r (@$resultsRef) {
         my $id = $r->{iteration_id} // $r->{metadata}{iteration} // 0;
@@ -258,7 +293,7 @@ sub GenerateResults {
     # -------------------------------------------------------------------------
     open my $fh, '>', $output_path or die "Cannot write $output_path: $!";
 
-    print $fh <<"HTML";
+print $fh <<"HTML";
 <!DOCTYPE html>
 <html>
 <head>
@@ -325,7 +360,10 @@ const chart = new Chart(ctx, {
   <tr><td>Database Version</td><td>$dbversion</td></tr>
   <tr><td>Engine</td><td>$dbeng</td></tr>
   <tr><td>Install Dir</td><td>$dbdir</td></tr>
-  <tr><td>Config File</td><td>$dbconfig</td></tr>
+  <tr><td>DB Config Origin</td><td>$dbconfig_origin</td></tr>
+  <tr><td>DB Config Source File</td><td>$dbconfig_source</td></tr>
+  <tr><td>DB Config Run File</td><td>$dbconfig_run</td></tr>
+  <tr><td>Config Identifier</td><td>$dbconfig_id</td></tr>
   <tr><td>Config Contents</td>
       <td style="font-size:smaller; white-space:pre-wrap;">$config_contents</td></tr>
 </table>
@@ -335,16 +373,23 @@ const chart = new Chart(ctx, {
   <tr><th>Property</th><th>Value</th></tr>
   <tr><td>Test Suite</td><td>$suite</td></tr>
   <tr><td>Test Name</td><td>$testname</td></tr>
-  <tr><td>Duration</td><td>$duration</td></tr>
+  <tr><td>Duration (seconds)</td><td>$duration</td></tr>
   <tr><td>Iterations</td><td>$iterations</td></tr>
   <tr><td>Timestamp</td><td>$timestamp</td></tr>
+  <tr><td>Scale</td><td>$scale</td></tr>
+  <tr><td>Threads</td><td>$threads</td></tr>
+  <tr><td>Test Case Tag</td><td>$test_case_tag</td></tr>
+  <tr><td>Test Client Version</td><td>$test_client_version</td></tr>
+  <tr><td>Checksum After Setup</td><td>$checksum_after_setup</td></tr>
+  <tr><td>Checksum After Run</td><td>$checksum_after_run</td></tr>
 HTML
-    foreach my $key (sort keys %suite_settings) {
-        my $val = $suite_settings{$key};
-        print $fh "<tr><td>$key</td><td>$val</td></tr>\n";
-    }
 
-    print $fh <<"HTML";
+foreach my $key (sort keys %suite_settings) {
+    my $val = $suite_settings{$key};
+    print $fh "<tr><td>$key</td><td>$val</td></tr>\n";
+}
+
+print $fh <<"HTML";
 </table>
 
 <h3 style="text-align:center; margin-top:40px;">Actual Query Times (per iteration)</h3>
@@ -356,21 +401,16 @@ HTML
   </tr>
 HTML
 
-    foreach my $qid (sort { $a <=> $b } keys %query_data) {
-        my @vals = @{ $query_data{$qid} };
-        my $avg  = $avg_query{$qid};
-        my $vals_str = join(", ", map { sprintf("%.4f", $_) } @vals);
+foreach my $qid (sort { $a <=> $b } keys %query_data) {
+    my @vals = @{ $query_data{$qid} };
+    my $avg  = $avg_query{$qid};
+    my $vals_str = join(", ", map { sprintf("%.4f", $_) } @vals);
 
-        print $fh <<"ROW";
-  <tr>
-    <td>Q$qid</td>
-    <td>$vals_str</td>
-    <td>@{[sprintf("%.4f", $avg)]}</td>
-  </tr>
-ROW
-    }
+    print $fh "<tr><td>Q$qid</td><td>$vals_str</td><td>" .
+              sprintf("%.4f", $avg) . "</td></tr>\n";
+}
 
-    print $fh <<"HTML";
+print $fh <<"HTML";
 </table>
 
 </body>

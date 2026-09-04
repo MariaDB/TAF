@@ -70,7 +70,7 @@ package TAF::Logging;
 #     - PrintError() and PrintWarning() must be used exactly once per error
 #       or warning event to maintain accurate counts.
 #############################################################################
-
+our $VERSION = '4.0';
 #===============================================================================
 #                                Imports
 #===============================================================================
@@ -96,7 +96,6 @@ BEGIN {
 require toolsLib;
 
 use constant TAF_LOG => 'TAF::Logging-> ';
-our $VERSION = '2.0';
 
 #===============================================================================
 #                   Error & Warnings Arrays
@@ -126,6 +125,7 @@ our @EXPORT = qw(
     PrintHeader
     PrintLine
     PrintPrompt
+    PrintTafConfigToFile
     PrintWarning
     PrintWarningsArray
     PrintVerbose
@@ -426,6 +426,103 @@ sub PrintAllVariables {
 
     PrintHeader("Runtime Configuration End", "*", 71);
 
+}
+
+#===============================================================================
+# PrintTafConfigToFile
+#
+# AUTHOR:
+#     Originally written by Lukas Oliva <lukas.oliva@virtuozzo.com>.
+#
+# PURPOSE:
+#     When the dump_run_state option/property is enabled, write the fully
+#     resolved TAF run-state (options, dirs, files, and inherited process
+#     environment) to a dedicated text file. This captures the final merged
+#     runtime state after properties, defaults, and command-line overrides
+#     have been applied.
+#
+# PARAMETERS:
+#     $ctx
+#         Framework context hashref containing options, dirs, files, and
+#         environment inherited at process start.
+#
+# BEHAVIOR:
+#     - No-op unless $ctx->{options}{dump_run_state} is true.
+#     - Writes to $ctx->{dirs}{reports_directory}/
+#       taf_run_state_dump_YYYYMMDD_HHMMSS.txt.
+#     - The file is archived automatically with the test case results once
+#       ArchiveResults executes.
+#     - Redacts known secret-shaped keys (passwords, tokens) by name.
+#     - Writes every line as a YAML comment ("# ..."), with each section's
+#       entries indented 4 spaces, so the dump can be pasted directly into
+#       result.yaml or other artifacts as a readable comment block.
+#
+# RETURNS:
+#     None.
+#
+# NOTES:
+#     - Must run only after options/dirs/files have been fully resolved.
+#     - Must not terminate the run; this is a diagnostic side effect only.
+#     - The dump is always stored in the reports directory so it is included
+#       in the archived test results.
+#===============================================================================
+sub PrintTafConfigToFile {
+    my ($ctx) = @_;
+
+    my $options = $ctx->{options};
+
+    # dump_run_state arrives ONLY via properties or options.
+    return unless $options->{dump_run_state};
+
+    my $dirs  = $ctx->{dirs};
+    my $files = $ctx->{files};
+
+    # Always write run-state dump into the reports directory.
+    my $dump_dir = $dirs->{reports_directory};
+    unless ($dump_dir && -d $dump_dir) {
+        PrintWarning("PrintTafConfigToFile: reports directory missing or invalid: " .
+                     ($dump_dir // "<undef>"));
+        return;
+    }
+
+    my @t = localtime();
+    my $stamp = sprintf("%04d%02d%02d_%02d%02d%02d",
+                        $t[5] + 1900, $t[4] + 1, $t[3],
+                        $t[2], $t[1], $t[0]);
+
+    my $dump_file = File::Spec->catfile($dump_dir,
+                                        "taf_run_state_dump_$stamp.txt");
+
+    # Redact secrets (case-insensitive substring match).
+    my $redact_re = qr/(AUTH|COOKIE|CREDENTIAL|PASS|PWD|PRIVATE|SECRET|TOKEN)/i;
+
+    open(my $fh, '>', $dump_file) or do {
+        PrintWarning("PrintTafConfigToFile: could not write $dump_file: $!");
+        return;
+    };
+
+    print $fh "# === TAF RESOLVED RUN-STATE ===\n";
+
+    for my $section (["options", $options],
+                     ["dirs",    $dirs],
+                     ["files",   $files],
+                     ["ENV",     \%ENV]) {
+
+        my ($name, $href) = @$section;
+        print $fh "# $name:\n";
+
+        for my $key (sort keys %$href) {
+            my $value = defined($href->{$key}) ? $href->{$key} : '<undef>';
+            $value = '***REDACTED***'
+                if $key =~ $redact_re && $value ne '<undef>' && $value ne '';
+            print $fh "#     $key: $value\n";
+        }
+    }
+
+    print $fh "# === END TAF RESOLVED RUN-STATE ===\n";
+    close $fh;
+
+    PrintVerbose("PrintTafConfigToFile: wrote run-state to $dump_file");
 }
 
 #===============================================================================

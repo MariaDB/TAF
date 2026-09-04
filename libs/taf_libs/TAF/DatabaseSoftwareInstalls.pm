@@ -3,7 +3,7 @@ package TAF::DatabaseSoftwareInstalls;
 # TAF::DatabaseSoftwareInstalls
 #
 # Created: Nov 2025
-# Last Modified: May 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -81,6 +81,7 @@ package TAF::DatabaseSoftwareInstalls;
 #     - Runtime DB lifecycle management is intentionally out of scope and
 #       belongs in suite-specific or plugin-specific modules.
 #############################################################################
+our $VERSION = '4.0';
 #===============================================================================
 #                                Imports
 #===============================================================================
@@ -119,9 +120,9 @@ use TAF::Logging qw(PrintError
 use TAF::Utilities qw(PluginAliases PluginBinPriority);
 require toolsLib;
 
-use constant TAF_DBSI => 'TAF::DatabaseSoftwareInstalls -> ';
-our $VERSION = '2.6';
-
+#===============================================================================
+#                           Internal Vars
+#===============================================================================
 # Local working state for install/update operations
 # This is NOT part of the TAF context and must never be persisted.
 my %install_state;
@@ -149,6 +150,8 @@ use constant {
     ZERO   => 0,
     UNDEF  => undef,
 };
+
+use constant TAF_DBSI => 'TAF::DatabaseSoftwareInstalls -> ';
 
 #===============================================================================
 #                   Database Software Install Functions
@@ -210,7 +213,7 @@ sub ChooseActiveDatabaseSoftwareInstall {
     # Get installs
     my @installs = _GetListOfInstalls($ctx);
     if (!@installs) {
-        Print("WARNING No installs found under $dirs_ref->{db_installs_root_dir}");
+        Print(TAF_DBSI."ERROR: No installs found under $dirs_ref->{db_installs_root_dir}");
         return ERROR;
     }
 
@@ -246,13 +249,13 @@ sub ChooseActiveDatabaseSoftwareInstall {
         # Parse selection
         my @sel = _ParseSelection($input, scalar(@installs));
         if (@sel != 1) {
-            Print("ERROR: Please select exactly one install.");
+            Print(TAF_DBSI."ERROR: Please select exactly one install.");
             next;
         }
 
         my $idx = $sel[0];
         if ($idx < 1 || $idx > @installs) {
-            Print("ERROR: Selection out of range");
+            Print(TAF_DBSI."ERROR: Selection out of range");
             next;
         }
 
@@ -264,7 +267,7 @@ sub ChooseActiveDatabaseSoftwareInstall {
             return OK;
         }
 
-        Print("ERROR: Failed to update active pointer.");
+        Print(TAF_DBSI."ERROR: Failed to update active pointer.");
     }
 }
 
@@ -336,19 +339,28 @@ sub DoInstall {
     my $root_dir = $ctx->{dirs}{db_installs_root_dir};
     my $pkgs     = $ctx->{options}{db_software_install_packages};
     
-    # Normalize to arrayref
-    $pkgs = [$pkgs] unless ref $pkgs eq 'ARRAY';
+    # Restore original behavior: split comma-separated scalar into arrayref
+    if (ref $pkgs eq 'ARRAY') {
+        # already an arrayref
+    } else {
+        my @list = split(/\s*,\s*/, $pkgs);
+        $pkgs = \@list;
+    }
     
     # Now declare @pkgs properly
     my @pkgs = @$pkgs;
     
     # Determine the install directory name exactly as the pipeline will create it
     my $base_pkg = _SelectBasePackage(\@pkgs);
+    if (!defined $base_pkg || $base_pkg eq '') {
+        PrintError("Install failed: invalid or missing package path.");
+        return ERROR;
+    }
     my $install_dir_name = basename($base_pkg);
     $install_dir_name =~ s/\.(tar\.gz|tgz|tar\.xz|tar\.bz2|tar|rpm|deb|zip)$//i;
     
     if (!defined $install_dir_name) {
-        PrintError("Unable to determine install directory name from packages");
+        PrintError(TAF_DBSI."Unable to determine install directory name from packages");
         return ERROR;
     }
 
@@ -356,7 +368,7 @@ sub DoInstall {
     
     if (-d $final_install_path) {
         Print("");
-        Print("\tERROR: Install directory already exists: $final_install_path");
+        Print(TAF_DBSI."ERROR: Install directory already exists: $final_install_path");
         Print("");
         Print("\tRefusing to install.");
         Print("");
@@ -376,7 +388,7 @@ sub DoInstall {
     # Validations (package list + existence)
     my @packages = _PerformInstallValidations($ctx);
     if (!@packages) {
-        PrintError("Install failed: package validation did not return any packages");
+        PrintError(TAF_DBSI."Install failed: package validation did not return any packages");
         return ERROR;
     }
 
@@ -386,7 +398,7 @@ sub DoInstall {
     if (!(defined $stage_dir && -d $stage_dir &&
           defined $install_root && -d $install_root)) {
 
-        PrintError("Install failed: extraction phase did not produce a valid install_root");
+        PrintError(TAF_DBSI."Install failed: extraction phase did not produce a valid install_root");
 
         # Best-effort cleanup of staging directory
         if (defined $stage_dir && -d $stage_dir) {
@@ -403,7 +415,7 @@ sub DoInstall {
     if (defined $stage_dir && -d $stage_dir) {
         my $clean_rc = _CleanupTempUnpackDir($ctx, $stage_dir);
         if ($clean_rc != OK) {
-            PrintError("Install warning: temporary staging directory could not be fully cleaned up");
+            PrintError(TAF_DBSI."Install warning: temporary staging directory could not be fully cleaned up");
         }
     }
 
@@ -578,6 +590,15 @@ sub ResolveAndValidateInstall {
         $files_ref->{active_install},
         $options_ref->{verbose}
     );
+
+    # Remove Unicode corruption 
+    $install_dir = _ResolveActiveInstall(
+        $options_ref->{db_software_install_dir},
+        $files_ref->{active_install},
+        $options_ref->{verbose}
+    );
+    
+    $options_ref->{db_software_install_dir} = $install_dir;
 
     # If resolution failed, log and return ERROR (do not die)
     if (!defined $install_dir) {
@@ -824,9 +845,9 @@ sub _ResolveActiveInstall {
         # not user intent. Do NOT update the marker.
         if (defined $current_active &&
             $install_dir eq $current_active) {
-            PrintVerbose("Current install directory     =  $install_dir");
-            PrintVerbose("Current active install marker =  $current_active");
-            PrintVerbose("Install and Active Marker match; treating as implicit");
+            PrintVerbose(TAF_DBSI."Current install directory     =  $install_dir");
+            PrintVerbose(TAF_DBSI."Current active install marker =  $current_active");
+            PrintVerbose(TAF_DBSI."Install and Active Marker match; treating as implicit");
             return $install_dir;
         }
 
@@ -1081,9 +1102,9 @@ sub _ResolveInstallType {
 
     # Log result of inference
     if (defined $type) {
-        PrintVerbose("Returning installed database software maker: $type");
+        PrintVerbose(TAF_DBSI."Returning installed database software maker: $type");
     } else {
-        PrintWarning("No install type could be resolved");
+        PrintWarning(TAF_DBSI."No install type could be resolved");
     }
 
     # End stage and return inferred type (or undef)
@@ -2790,9 +2811,7 @@ sub _NormalizeUsrLayout {
                     if $debug;
 
                 my $rc = _MoveUsrSubdir($product_dir, $install_root, $debug);
-                if ($rc != OK) {
-                    return ERROR;
-                }
+                return ERROR if $rc != OK;
 
                 File::Path::remove_tree($usr);
                 return OK;
@@ -2813,16 +2832,39 @@ sub _NormalizeUsrLayout {
 
     for my $e (@usr_entries) {
         my $path = File::Spec->catdir($usr, $e);
+        next unless -d $path;
 
-        if (-d $path && ($e eq 'bin' || $e eq 'lib' || $e eq 'share' || $e eq 'include')) {
-            PrintVerbose("_NormalizeUsrLayout -> Moving usr/$e into install_root") if $debug;
-
-            my $rc = _MoveUsrSubdir($path, $install_root, $debug);
-            if ($rc != OK) {
-                return ERROR;
-            }
+        # PostgreSQL EL9: usr/lib64 → install_root/lib64
+        if ($e eq 'lib64') {
+            PrintVerbose("_NormalizeUsrLayout -> Moving usr/lib64 into install_root/lib64") if $debug;
+            my $target = File::Spec->catdir($install_root, 'lib64');
+            my $rc = _MoveUsrSubdir($path, $target, $debug);
+            return ERROR if $rc != OK;
+            next;
         }
+
+        # PostgreSQL EL9: usr/lib → install_root (merge lib)
+        if ($e eq 'lib') {
+            PrintVerbose("_NormalizeUsrLayout -> Moving usr/lib into install_root (merge lib)") if $debug;
+            my $rc = _MoveUsrSubdir($path, $install_root, $debug);
+            return ERROR if $rc != OK;
+            next;
+        }
+
+        # Standard dirs: bin/share/include → install_root
+        if ($e eq 'bin' || $e eq 'share' || $e eq 'include') {
+            PrintVerbose("_NormalizeUsrLayout -> Moving usr/$e into install_root") if $debug;
+            my $rc = _MoveUsrSubdir($path, $install_root, $debug);
+            return ERROR if $rc != OK;
+            next;
+        }
+
+        # Fallback: flatten any other usr/<subdir> into install_root
+        PrintVerbose("_NormalizeUsrLayout -> Flattening usr/$e into install_root") if $debug;
+        my $rc = _MoveUsrSubdir($path, $install_root, $debug);
+        return ERROR if $rc != OK;
     }
+
 
     # Remove usr if empty
     opendir(my $dh3, $usr) or return OK;
@@ -2918,6 +2960,35 @@ sub _MoveUsrSubdir {
     }
 
     File::Path::remove_tree($src);
+
+    # FINAL BLUNT FIX: if we ended up with lib/lib under this install_root, flatten it.
+    my $lib_dir  = File::Spec->catdir($install_root, 'lib');
+    my $inner_lib = File::Spec->catdir($lib_dir, 'lib');
+
+    if (-d $lib_dir && -d $inner_lib) {
+        PrintVerbose("_MoveUsrSubdir -> Flattening nested lib/lib under $install_root") if $debug;
+
+        opendir(my $ldh, $inner_lib) or do {
+            PrintError("_MoveUsrSubdir -> ERROR: Unable to open $inner_lib");
+            return ERROR;
+        };
+
+        my @lib_entries = grep { $_ ne '.' && $_ ne '..' } readdir($ldh);
+        closedir($ldh);
+
+        for my $e (@lib_entries) {
+            my $src_path = File::Spec->catfile($inner_lib, $e);
+            my $dst_path = File::Spec->catfile($lib_dir, $e);
+
+            if (!rename($src_path, $dst_path)) {
+                PrintError("_MoveUsrSubdir -> ERROR: Failed to rename $src_path -> $dst_path: $!");
+                return ERROR;
+            }
+        }
+
+        File::Path::remove_tree($inner_lib);
+    }
+
     return OK;
 }
 
@@ -4233,6 +4304,14 @@ sub _SelectBasePackage {
     my ($packages_ref) = @_;
 
     my @packages = @$packages_ref;
+
+    # Validate all package paths before processing
+    for my $pkg (@packages) {
+        if (!defined($pkg) || $pkg eq '' || !-f $pkg) {
+            PrintError("_SelectBasePackage -> invalid or missing RPM path: $pkg");
+            return undef;
+        }
+    }
 
     # Bundle detection: outer tar files only
     for my $pkg (@packages) {

@@ -3,7 +3,7 @@ package Properties;
 # Properties
 #
 # Added: August 2025
-# Last Modified: January 2026
+# Last Modified: August 2026
 #
 # ORIGINAL AUTHORSHIP AND PROVENANCE:
 #     This module is a thin integration layer around Config::Properties,
@@ -589,48 +589,74 @@ my $bomre = eval(q< qr/^\\x{FEFF}/ >) || qr//;
 
 sub process_line {
     my ($self, $file) = @_;
-    my $line=<$file>;
+    my $line = <$file>;
 
     defined $line or return undef;
+
     my $ln = $self->{line_number} = $file->input_line_number;
+
+    # remove utf8 BOM on first line
     if ($ln == 1) {
-        # remove utf8 byte order mark
         $line =~ s/$bomre//;
     }
-    # ignore comments
+
+    # ignore comments and blank lines
     $line =~ /^\s*(\#|\!|$)/ and return 1;
 
+    # ignore ANY bracketed section header: [xxx]
+    $line =~ /^\s*\[[^\]]+\]\s*$/ and return 1;
+
+    # strip CRLF
     $line =~ s/\x0D*\x0A$//;
+
+    if ($line =~ /db_config_start/i) {
+        $self->{skip_db_config} = 1;
+        return 1;
+    }
+
+    if ($line =~ /db_config_end/i) {
+        $self->{skip_db_config} = 0;
+        return 1;
+    }
+
+    if ($self->{skip_db_config}) {
+        return 1;
+    }
 
     # handle continuation lines
     my @lines;
     while ($line =~ /(\\+)$/ and length($1) & 1) {
-  $line =~ s/\\$//;
-  push @lines, $line;
-  $line = <$file>;
-  $line =~ s/\x0D*\x0A$//;
-  $line =~ s/^\s+//;
+        $line =~ s/\\$//;
+        push @lines, $line;
+        $line = <$file>;
+        $line =~ s/\x0D*\x0A$//;
+        $line =~ s/^\s+//;
     }
-    $line=join('', @lines, $line) if @lines;
 
-    my ($key, $value) = $line =~ /^
-          \s*
-          ((?:[^\s:=\\]|\\.)+)
-          \s*
-          [:=\s]
-          \s*
-          (.*)
-          $
-          /x
-       or $self->fail("invalid property line '$line'");
-  
+    $line = join('', @lines, $line) if @lines;
+
+    # allow key-only boolean flags
+    if ($line =~ /^\s*([^\s:=\\]+)\s*$/) {
+        my $key = $1;
+        unescape $key;
+        $self->{validate}->($key, 1) if $self->{validate};
+        $self->{property_line_numbers}{$key} = $ln;
+        $self->{next_line_number} = $ln + 1;
+        $self->{properties}{$key} = 1;
+        return 1;
+    }
+
+    # parse key/value
+    my ($key, $value) = $line =~ /^\s*((?:[^\s:=\\]|\\.)+)\s*[:=\s]\s*(.*)$/x
+        or $self->fail("invalid property line '$line'");
+
     unescape $key;
     unescape $value;
 
     $self->validate($key, $value);
 
     $self->{property_line_numbers}{$key} = $ln;
-    $self->{next_line_number}=$ln+1;
+    $self->{next_line_number} = $ln + 1;
 
     $self->{properties}{$key} = $value;
 

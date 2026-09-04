@@ -61,6 +61,24 @@ public class DbConfig {
     public static void load(String path) throws Exception {
         Map<String, String> map = parseConfigFile(path);
 
+        // New-style keys (preferred)
+        if (map.containsKey("backend_db_host")) {
+            host = map.get("backend_db_host");
+        }
+        if (map.containsKey("backend_db_port")) {
+            port = Integer.parseInt(map.get("backend_db_port"));
+        }
+        if (map.containsKey("backend_db_user")) {
+            user = map.get("backend_db_user");
+        }
+        if (map.containsKey("backend_db_pass")) {
+            password = map.get("backend_db_pass");
+        }
+        if (map.containsKey("backend_db_name")) {
+            database = map.get("backend_db_name");
+        }
+
+        // Old-style keys (fallback)
         if (map.containsKey("host")) {
             host = map.get("host");
         }

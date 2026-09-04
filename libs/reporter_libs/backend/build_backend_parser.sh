@@ -1,10 +1,10 @@
 #!/bin/sh
 #===============================================================================
 # build_backend_parser.sh
-# TAF-Backend-Parser Version: 1.0
+# TAF-Backend-Parser Version: 1.1
 #
 # Created: May 2026
-# Last Modified: June 2026
+# Last Modified: July 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -27,45 +27,97 @@
 #
 # PURPOSE:
 #     Build the TAF backend parser into BackendParser.jar. This script compiles
-#     all Java sources under backend_parser/source, includes the JSON library
-#     on the classpath, generates a manifest with the correct Main-Class entry,
-#     and packages the compiled classes into a reproducible JAR.
+#     all Java sources under backend_parser/source, uses the JSON library from
+#     backend/working/lib, generates a manifest with the correct Main-Class
+#     entry, and packages the compiled classes into a reproducible JAR.
 #
 # SCOPE OF THIS SCRIPT:
+#     - Verify this script is running inside reporter_libs/backend/.
+#     - Ensure backend/working and backend/working/lib exist (create if missing).
 #     - Clean old .class files without removing configuration files.
-#     - Compile Java sources with the JSON library.
+#     - Compile Java sources with all required libraries under backend/working/lib.
 #     - Generate a manifest for TafBackendCli.
-#     - Produce BackendParser.jar in backend_parser/working.
+#     - Produce BackendParser.jar in backend/working/.
 #
 # NOTES:
-#     This script assumes a POSIX shell environment. Any change to directory
-#     layout, classpath requirements, or main entry point must be reflected in
-#     this header and in the TAF manual.
+#     This script assumes the unified backend layout where all runtime artifacts
+#     (BackendParser.jar, BackendDataGetter.jar, JDBC drivers, JSON libraries)
+#     live under reporter_libs/backend/working/. Any change to directory layout,
+#     classpath requirements, or main entry point must be reflected in this
+#     header and in the TAF manual.
 #===============================================================================
-SRC=backend_parser/source/taf/backend/parser
-OUT=backend_parser/working
-JAR=$OUT/BackendParser.jar
+#------------------------------------------------------------------------------
+# Ensure script is running inside reporter_libs/backend/
+#------------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PARENT="$(basename "$SCRIPT_DIR")"
 
-# Path to your JSON library
-JSON_JAR=backend_parser/working/json-20260522.jar
+if [ "$PARENT" != "backend" ]; then
+    echo "ERROR: build_backend_parser.sh must live inside reporter_libs/backend/"
+    echo "Current directory: $SCRIPT_DIR"
+    exit 1
+fi
 
-# ensure working directory exists
-mkdir -p $OUT
+#------------------------------------------------------------------------------
+# Define unified working directory and source tree
+#------------------------------------------------------------------------------
+SRC_ROOT="$SCRIPT_DIR/backend_parser/source"
+OUT="$SCRIPT_DIR/working"
+JAR="$OUT/BackendParser.jar"
+MANIFEST="$OUT/manifest.txt"
 
-# remove ONLY old .class files and old jar, NOT configs
-find $OUT -name "*.class" -delete
-rm -f $JAR
+#------------------------------------------------------------------------------
+# Ensure working directory exists
+#------------------------------------------------------------------------------
+if [ ! -d "$OUT" ]; then
+    echo "Creating backend/working directory..."
+    mkdir -p "$OUT"
+fi
 
-# compile with JSON jar on classpath
-javac -cp $JSON_JAR -d $OUT $(find $SRC -name "*.java") || {
+#------------------------------------------------------------------------------
+# Required runtime jars (must exist directly in backend/working/)
+#------------------------------------------------------------------------------
+JSON_JAR="$OUT/json-20260522.jar"
+JDBC_JAR="$OUT/mariadb-java-client.jar"
+
+if [ ! -f "$JSON_JAR" ]; then
+    echo "ERROR: Required JSON library not found:"
+    echo "       $JSON_JAR"
+    exit 1
+fi
+
+if [ ! -f "$JDBC_JAR" ]; then
+    echo "ERROR: Required JDBC driver not found:"
+    echo "       $JDBC_JAR"
+    exit 1
+fi
+
+#------------------------------------------------------------------------------
+# Clean old .class files and old jar
+#------------------------------------------------------------------------------
+find "$OUT" -name "*.class" -delete
+rm -f "$JAR"
+
+#------------------------------------------------------------------------------
+# Compile ALL Java sources under backend_parser/source/
+#------------------------------------------------------------------------------
+echo "Compiling Java sources..."
+javac -cp "$OUT/*" -d "$OUT" $(find "$SRC_ROOT" -name "*.java") || {
     echo "Compilation failed"
     exit 1
 }
 
-# correct main class
-echo "Main-Class: taf.backend.parser.TafBackendCli" > $OUT/manifest.txt
+#------------------------------------------------------------------------------
+# Generate manifest (Main-Class + Class-Path)
+#------------------------------------------------------------------------------
+echo "Main-Class: taf.backend.parser.TafBackendCli" > "$MANIFEST"
+echo "Class-Path: json-20260522.jar mariadb-java-client.jar" >> "$MANIFEST"
 
-# package jar
-jar cfm $JAR $OUT/manifest.txt -C $OUT .
+#------------------------------------------------------------------------------
+# Package jar
+#------------------------------------------------------------------------------
+echo "Packaging BackendParser.jar..."
+jar cfm "$JAR" "$MANIFEST" -C "$OUT" .
 
-echo "Built: $JAR"
+echo "BackendParser.jar successfully built in:"
+echo "    $JAR"

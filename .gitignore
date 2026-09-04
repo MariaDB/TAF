@@ -1,1 +1,32 @@
 *:Zone.Identifier
+
+# Build artifacts under client_source/ (built locally by
+# `perl taf.pl --action=build-client`, or setup_almalinux10.sh's
+# provisioning step -- never commit these; a leftover CMakeCache.txt from
+# one contributor's machine breaks `cmake` outright on any other machine
+# with "CMakeCache.txt directory ... is different than the directory ...
+# where CMakeCache.txt was created").
+client_source/*/build/
+client_source/*/CMakeCache.txt
+client_source/*/CMakeFiles/
+client_source/*/cmake_install.cmake
+client_source/*/**/CMakeCache.txt
+client_source/*/**/CMakeFiles/
+client_source/*/**/cmake_install.cmake
+client_source/sysbench-lua/sysbench
+
+# Local database software installs and TAF run artifacts
+database_software_installs/
+.taf-active-install.txt
+.taf_pg_env
+results/
+archive/
+logs/
+data/
+runtime/
+reports/
+tmp/
+.run_count.txt
+.TAF.LOCK
+__pycache__/
+.pytest_cache/

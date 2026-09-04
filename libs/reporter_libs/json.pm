@@ -3,7 +3,7 @@ package reporter_libs::json;
 # reporter_libs::json
 #
 # Created: December 2025
-# Last Modified: January 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -79,12 +79,20 @@ use warnings;
 use Exporter 'import';
 use File::Spec;
 use File::Path qw(make_path);
-use JSON::PP;
 
 our @EXPORT_OK = qw(GenerateResults);
 
 sub GenerateResults {
     my ($resultsRef, $outputFile, $outputDir) = @_;
+
+    eval {
+        require JSON::PP;
+        JSON::PP->import();
+        1;
+    } or do {
+        print("ERROR: json reporter: Missing dependency JSON::PP\n");
+        return 0;
+    };
 
     # Ensure output directory exists
     unless (-d $outputDir) {

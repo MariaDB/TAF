@@ -3,9 +3,9 @@ package mariadb;
 # mariadb.pm - MariaDB Database Plugin for TAF
 #
 # Created:       January 2026
-# Last Modified: July 2026
+# Last Modified: August 2026
 #
-# Vesion: 3.2
+# Vesion: 4.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -589,7 +589,7 @@ sub db_start {
         my $dump_cmd = "$client --socket=$self->{socket} -u root -p\"$self->{db_root_pass}\" -e \"SHOW VARIABLES\" > $vars_file 2>&1";
     
         system($dump_cmd) == 0
-            ? PrintVerbose("Dumped SHOW VARIABLES to $vars_file")
+            ? PrintVerbose($_st."Dumped SHOW VARIABLES to $vars_file")
             : PrintError("Failed to dump SHOW VARIABLES to $vars_file");
     }
 

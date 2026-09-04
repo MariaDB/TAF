@@ -3,7 +3,7 @@
 #
 # Created: September 2025
 # Last Modified: August 2026
-# Version: 1.5
+# Version: 4.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -19,7 +19,7 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335 
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335
 #
 # Licensed under the GNU General Public License, version 2 or later (GPLv2+).
 # See https://www.gnu.org/licenses/ for details.
@@ -81,8 +81,8 @@
 ## Metadata
 ## --------------------------------------------------------------------------
 our $properties_prefix = "sysbench_lua";
-our $ts_version        = 1;
-our $ts_revision       = 5;
+our $ts_version        = 4;
+our $ts_revision       = 0;
 our $ts_type           = "benchmark";
 our $client_version    = "Sysbench-1.0";
 our $ctx               = undef;
@@ -92,6 +92,7 @@ our $ctx               = undef;
 #-----------------------------------------------------------------------------
 
 use Cwd;
+use File::Basename qw(dirname);
 use threads;
 use constant IS_WINDOWS => ($^O =~ /^(mswin)/oi);
 use FindBin qw($Bin);
@@ -1004,10 +1005,10 @@ sub Help {
     Print("\tare included in each request.");
     Print("\tExample: To run 3 simple-range queries per request instead of 1,");
     Print("\tset: sysbench_lua.oltp_simple_ranges=3\n");
-    
+
     Print("\tPOINTS-COVERED-PK \n");
     Print("\tsysbench_lua.random_points_ranges\n");
-   
+
     Print("\tPOINTS-COVERED-SI \n");
     Print("\tsysbench_lua.random_points_ranges\n");
 
@@ -1024,7 +1025,7 @@ sub Help {
     Print("\tRANGE-COVERED-SI \n");
     Print("\t\tsysbench_lua.random_points_ranges\n");
 
-    
+
     Print("\tRANGE-NOTCOVERED-PK \n");
     Print("\t\tsysbench_lua.random_points_ranges\n");
 
@@ -1035,7 +1036,7 @@ sub Help {
 
     Print("\tRANDOM-POINTS \n");
     Print("\t\tysbench_lua.random_points_ranges\n");
-    
+
     Print("\tHOT-POINTS \n");
     Print("\t\tsysbench_lua.random_points_ranges\n");
 
@@ -1423,25 +1424,29 @@ sub ValidateTargetWithSuite {
     my ($incoming) = @_;
 
     my $vt = StageStart(TAFMsg("Sysbench-lua::ValidateTargetWithSuite ->"));
-    if(!defined $incoming){
+    if (!defined $incoming) {
         PrintError($vt."Incoming param is not defined");
+        return ERROR;
     }
 
-    if(!defined $tsOpt{db_driver}){
-        PrintWarning($vt."Test suites db_driver not defined");
+    if (!defined $tsOpt{db_driver}) {
+        PrintWarning($vt."Test suite db_driver not defined");
         PrintVerbose($vt."Allowing to move forward. Define test suite db_driver if not correct.");
         $tsOpt{db_driver} = NormalizeDBType($incoming);
         PrintVerbose($vt."Set for this run db_type to $tsOpt{db_driver}.");
         return OK;
     }
 
-        my $expected = $tsOpt{db_driver};
-    if (lc($incoming) eq lc($expected)) {
-        PrintVerbose($vt."db_driver match db maker $incoming, returning OK.");
+    my $expected = $tsOpt{db_driver};
+    my $normalized_incoming  = NormalizeDBType($incoming);
+    my $normalized_expected  = NormalizeDBType($expected);
+
+    if ($normalized_incoming eq $normalized_expected) {
+        PrintVerbose($vt."db driver matches db maker ($incoming -> $normalized_incoming), returning OK.");
         StageEnd($vt);
         return OK;
     } else {
-        PrintError($vt."Mismatch: sysbench_lua.db_driver = $expected, db install shows $incoming");
+        PrintError($vt."Mismatch: sysbench_lua.db_driver=$expected (normalized=$normalized_expected), db install shows $incoming (normalized=$normalized_incoming)");
         return ERROR;
     }
 }
@@ -1711,7 +1716,7 @@ sub CheckTestsForUpdateRange{
 sub ConfigureBMKTestCase{
      my ($test_uc) = @_;
      $test_uc = uc($test_uc);
- 
+
     my $_cbmk = StageStart($_me." -> ConfigureBMKTestCase ->");
     # Here, we handle only BMK-only tests (ie: not optional use_bmk tests)
     if ($bmkFlags{bmk_sec_index_test_case}) {
@@ -1726,25 +1731,25 @@ sub ConfigureBMKTestCase{
 
     if ($test_uc eq "BMK_RW_UPDATE_RANGE") {
         $tsOpt{oltp_lua_script} = "OLTP_RW$trx_suffix";
-    
+
     } elsif ($test_uc eq "BMK_WO_UPDATE_RANGE") {
         $tsOpt{oltp_lua_script} = "OLTP_RW-write_only$trx_suffix";
-    
+
     } elsif ($test_uc eq "BMK_RW_UPDATE_INDEX_RANGE") {
         $tsOpt{oltp_lua_script} = "OLTP_RW-index_updates$trx_suffix";
-    
+
     } elsif ($test_uc eq "BMK_RW_UPDATE_NON_INDEX_RANGE") {
         $tsOpt{oltp_lua_script} = "OLTP_RW-non_index_updates$trx_suffix";
-    
+
     } elsif ($test_uc eq "BMK_RW_PS_UPDATE_RANGE") {
         $tsOpt{oltp_lua_script} = "OLTP_RW-point_selects$trx_suffix";
-    
+
     } elsif ($test_uc eq "BMK_RW_PS_UPDATE_INDEX_RANGE") {
         $tsOpt{oltp_lua_script} = "OLTP_RW-point_selects-non_index_updates$trx_suffix";
-    
+
     } elsif ($test_uc eq "BMK_RW_PS_UPDATE_NON_INDEX_RANGE") {
         $tsOpt{oltp_lua_script} = "OLTP_RO-non_index_updates$trx_suffix";
-    
+
     } elsif ($test_uc eq "CONNECT") {
         $tsOpt{oltp_lua_script} = "OLTP_RO-point_selects_reconnect$trx_suffix";
         $tsOpt{test_args} .= " --point-selects=1 ";
@@ -1752,7 +1757,7 @@ sub ConfigureBMKTestCase{
         $tsOpt{test_args} .= " --sum-ranges=0 ";
         $tsOpt{test_args} .= " --order-ranges=0 ";
         $tsOpt{test_args} .= " --distinct-ranges=0 ";
-    
+
     } else {
         PrintError($_cbmk." Invalid test: $test");
         return ERROR;
@@ -1803,10 +1808,10 @@ sub ConfigureStdTestCase{
     # Here, we handle tests which are in the base lua set (and may also be in BMK-kit)
     my $trx_flag = $tsOpt{oltp_skip_trx};
     my $use_bmk  = $tsOpt{use_bmk};
-    
+
     # Helper for transactional suffix
     my $trx_suffix = ($trx_flag eq "off") ? "-trx.lua" : "-notrx.lua";
-    
+
     # POINT_SELECT
     if ($test_uc eq "POINT_SELECT") {
         $tsOpt{oltp_lua_script} = $use_bmk ? "OLTP_RO-point_selects$trx_suffix" : "oltp_point_select.lua";
@@ -1816,7 +1821,7 @@ sub ConfigureStdTestCase{
         $tsOpt{test_args} .= " --sum-ranges=0";
         $tsOpt{test_args} .= " --order-ranges=0";
         $tsOpt{test_args} .= " --distinct-ranges=0";
-    
+
     # PARSER
     } elsif ($test_uc eq "PARSER") {
         $tsOpt{oltp_lua_script} = "oltp_point_select.lua";
@@ -1870,7 +1875,7 @@ sub ConfigureStdTestCase{
     } elsif ($test_uc eq "OLTP_INSERT_INTO") {
         $tsOpt{oltp_lua_script} = "oltp_insert_into.lua";
         $tsOpt{test_args}  = " --skip-trx=$trx_flag";
-    
+
     # OLTP_RW
     } elsif ($test_uc eq "OLTP_RW") {
         $tsOpt{oltp_lua_script} = "oltp_read_write.lua";
@@ -1895,7 +1900,7 @@ sub ConfigureStdTestCase{
     } elsif ($test_uc eq "INSERT") {
         $tsOpt{oltp_lua_script} = "oltp_insert.lua";
         $tsOpt{test_args}  = " --skip-trx=$trx_flag";
-    
+
     # DELETE
     } elsif ($test_uc eq "DELETE") {
         $tsOpt{oltp_lua_script} = "oltp_delete.lua";
@@ -1980,19 +1985,19 @@ sub ConfigureStdTestCase{
         $tsOpt{test_args} .= " --sum-ranges=$tsOpt{oltp_sum_ranges}";
         $tsOpt{test_args} .= " --order-ranges=$tsOpt{oltp_order_ranges}";
         $tsOpt{test_args} .= " --distinct-ranges=$tsOpt{oltp_distinct_ranges}";
-    #POINTS-COVERED-PK 
+    #POINTS-COVERED-PK
     } elsif ($test_uc eq "POINTS-COVERED-PK") {
         $tsOpt{oltp_lua_script} = "oltp_points_covered.lua";
         $tsOpt{test_args}  = " --skip-trx";
         $tsOpt{test_args} .= " --on-id=true";
         $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
-    #POINTS-COVERED-SI     
+    #POINTS-COVERED-SI
     } elsif ($test_uc eq "POINTS-COVERED-SI") {
         $tsOpt{oltp_lua_script} = "oltp_points_covered.lua";
         $tsOpt{test_args}  = " --skip-trx";
         $tsOpt{test_args} .= " --on-id=false";
         $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
-    #POINTS-NOTCOVERED-PK      
+    #POINTS-NOTCOVERED-PK
     } elsif ($test_uc eq "POINTS-NOTCOVERED-PK") {
         $tsOpt{oltp_lua_script} = "oltp_points_covered.lua";
         $tsOpt{test_args}  = " --skip-trx";
@@ -2006,19 +2011,19 @@ sub ConfigureStdTestCase{
         $tsOpt{test_args} .= " --on-id=false";
         $tsOpt{test_args} .= " --covered=false";
         $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
-    #RANGE-COVERED-PK 
+    #RANGE-COVERED-PK
     } elsif ($test_uc eq "RANGE-COVERED-PK") {
         $tsOpt{oltp_lua_script} = "oltp_range_covered.lua";
         $tsOpt{test_args}  = " --skip-trx";
         $tsOpt{test_args} .= " --on-id=true";
         $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
-    #RANGE-COVERED-SI     
+    #RANGE-COVERED-SI
     } elsif ($test_uc eq "RANGE-COVERED-SI") {
         $tsOpt{oltp_lua_script} = "oltp_range_covered.lua";
         $tsOpt{test_args}  = " --skip-trx";
         $tsOpt{test_args} .= " --on-id=false";
         $tsOpt{test_args} .= " --random-points=$tsOpt{random_points_ranges}";
-    #RANGE-NOTCOVERED-PK      
+    #RANGE-NOTCOVERED-PK
     } elsif ($test_uc eq "RANGE-NOTCOVERED-PK") {
         $tsOpt{oltp_lua_script} = "oltp_range_covered.lua";
         $tsOpt{test_args}  = " --skip-trx";
@@ -2659,24 +2664,49 @@ sub SetConnectionArgs {
     my $args = "";
 
     # Base driver
-    # Normalize MariaDB aliases to mysql
+    # Normalize MariaDB aliases to mysql; normalize PostgreSQL aliases to pgsql
     if ($tsOpt{db_driver} =~ /^maria(db)?$/i) {
         $tsOpt{db_driver} = "mysql";
     }
+    elsif ($tsOpt{db_driver} =~ /^(postgres|postgresql)$/i) {
+        $tsOpt{db_driver} = "pgsql";
+    }
     $args .= "$tsState{target_lua} --db-driver=" . $tsOpt{db_driver};
 
-    # Connection method
-    if ($options{db_clients_use_unix_socket}) {
-         $args .= " --mysql-socket='" . $options{db_socket} . "'";
-    } else {
-        $args .= " --mysql-host='" . $options{host} . "'";
-        $args .= " --mysql-port=" . $options{db_port};
-    }
+    # Connection parameters — branched by driver family
+    if ($tsOpt{db_driver} eq 'pgsql') {
 
-    # Credentials
-    $args .= " --mysql-user='" . $options{db_user} . "'";
-    $args .= " --mysql-password='" . $options{db_user_pass} . "'";
-    $args .= " --mysql-db='" . $tmpDatabase . "'";
+        # PostgreSQL socket vs TCP
+        if ($options{db_clients_use_unix_socket}) {
+            # libpq requires a DIRECTORY for socket connections
+            $args .= " --pgsql-host='" . dirname($options{db_socket} || '/var/run/postgresql') . "'";
+        } else {
+            # Correct TCP host logic (no hard-coded loopback unless user requested localhost)
+            my $pg_host = ($options{host} eq 'localhost')
+                          ? '127.0.0.1'
+                          : $options{host};
+            $args .= " --pgsql-host='" . $pg_host . "'";
+        }
+
+        $args .= " --pgsql-port=" . $options{db_port};
+        $args .= " --pgsql-user='" . $options{db_user} . "'";
+        $args .= " --pgsql-password='" . $options{db_user_pass} . "'";
+        $args .= " --pgsql-db='" . $tmpDatabase . "'";
+
+    } else {
+
+        # MySQL / MariaDB
+        if ($options{db_clients_use_unix_socket}) {
+            $args .= " --mysql-socket='" . $options{db_socket} . "'";
+        } else {
+            $args .= " --mysql-host='" . $options{host} . "'";
+            $args .= " --mysql-port=" . $options{db_port};
+        }
+
+        $args .= " --mysql-user='" . $options{db_user} . "'";
+        $args .= " --mysql-password='" . $options{db_user_pass} . "'";
+        $args .= " --mysql-db='" . $tmpDatabase . "'";
+    }
 
     # Execution mode
     if (!$options{use_request_based}) {
@@ -2693,20 +2723,25 @@ sub SetConnectionArgs {
     $args .= " --tables=" .  $tsOpt{number_of_tables};
 
     # Partitioning
-    $args .= " --oltp-num-partitions=" . $tsOpt{number_of_partitions} if defined $tsOpt{number_of_partitions};
+    $args .= " --oltp-num-partitions=" . $tsOpt{number_of_partitions}
+        if defined $tsOpt{number_of_partitions};
 
-    # Shutdown behavior
-    if($tsOpt{forced_shutdown}){
-       $args .= " --forced-shutdown=" . $tsOpt{forced_shutdown_sec} if defined $tsOpt{forced_shutdown_sec};
+    # Shutdown behavior (MySQL/MariaDB only)
+    if ($tsOpt{db_driver} ne 'pgsql' && $tsOpt{forced_shutdown}) {
+        $args .= " --forced-shutdown=" . $tsOpt{forced_shutdown_sec}
+            if defined $tsOpt{forced_shutdown_sec};
     }
 
-    # Errors to ignore
-    $args .= " --mysql-ignore-errors=" . $tsOpt{ignore_errors} if defined $tsOpt{ignore_errors};
+    # Storage engine (MySQL/MariaDB only)
+    if ($tsOpt{db_driver} ne 'pgsql') {
+        $args .= " --mysql-ignore-errors=" . $tsOpt{ignore_errors}
+            if defined $tsOpt{ignore_errors};
 
-    # Storage engine
-    $args .= " --mysql-storage-engine=" . lc($options{db_engine}) if defined $options{db_engine};
+        $args .= " --mysql-storage-engine=" . lc($options{db_engine})
+            if defined $options{db_engine};
+    }
 
-    # Per-table CREATE TABLE options (e.g. TidesDB table options)
+    # Per-table CREATE TABLE options
     if (defined $tsOpt{create_table_options} && length $tsOpt{create_table_options}) {
         $args .= " --create-table-options='" . $tsOpt{create_table_options} . "'";
     }
@@ -2716,7 +2751,8 @@ sub SetConnectionArgs {
     $args .= " --auto-inc="   .$tsOpt{auto_inc};
 
     # Seed RNG
-    $args .= " --rand-seed=" . $tsOpt{seed_rng} if $tsOpt{seed_rng} > ZERO;
+    $args .= " --rand-seed=" . $tsOpt{seed_rng}
+        if $tsOpt{seed_rng} > ZERO;
 
     # Benchmark-specific options
     if ($tsOpt{use_bmk}) {
@@ -2734,22 +2770,40 @@ sub SetConnectionArgs {
         }
 
         $args .= " --thread-init-timeout=" . $tsOpt{thread_init_timeout};
-        $args .= " --mysql-ssl=" .$tsOpt{bmk_mysql_ssl} if defined $tsOpt{bmk_mysql_ssl};
 
-        $args .= " --sync-file='" . $tsOpt{bmk_sync_file} . "'" if defined $tsOpt{bmk_sync_file};
-        $args .= " --sync-wait=" . $tsOpt{bmk_sync_file_wait_timeout_ms} if defined $tsOpt{bmk_sync_file_wait_timeout_ms};
+        # MySQL/MariaDB only
+        $args .= " --mysql-ssl=" .$tsOpt{bmk_mysql_ssl}
+            if defined $tsOpt{bmk_mysql_ssl} && $tsOpt{db_driver} ne 'pgsql';
+
+        $args .= " --sync-file='" . $tsOpt{bmk_sync_file} . "'"
+            if defined $tsOpt{bmk_sync_file};
+
+        $args .= " --sync-wait=" . $tsOpt{bmk_sync_file_wait_timeout_ms}
+            if defined $tsOpt{bmk_sync_file_wait_timeout_ms};
+
     } else {
-        $args .= " --mysql-ssl" if defined $tsOpt{mysql_ssl};
+        # MySQL/MariaDB non-BMK SSL flag
+        $args .= " --mysql-ssl"
+            if defined $tsOpt{mysql_ssl} && $tsOpt{db_driver} ne 'pgsql';
     }
 
-    # SSL certs
-    $args .= " --mysql-ssl-ca='" . $tsOpt{mysql_ssl_ca} . "'" if defined $tsOpt{mysql_ssl_ca};
-    $args .= " --mysql-ssl-cert='" . $tsOpt{mysql_ssl_cert} . "'" if defined $tsOpt{mysql_ssl_cert};
-    $args .= " --mysql-ssl-key='" . $tsOpt{mysql_ssl_key} . "'" if defined $tsOpt{mysql_ssl_key};
+    # SSL certs — MySQL/MariaDB only
+    if ($tsOpt{db_driver} ne 'pgsql') {
+        $args .= " --mysql-ssl-ca='"   . $tsOpt{mysql_ssl_ca}   . "'"
+            if defined $tsOpt{mysql_ssl_ca};
+        $args .= " --mysql-ssl-cert='" . $tsOpt{mysql_ssl_cert} . "'"
+            if defined $tsOpt{mysql_ssl_cert};
+        $args .= " --mysql-ssl-key='"  . $tsOpt{mysql_ssl_key}  . "'"
+            if defined $tsOpt{mysql_ssl_key};
+    }
 
-    # Charset and partitioning
-    $args .= " --mysql-table-partitions=" . $tsOpt{bmk_partitions} if $tsOpt{bmk_partitions} > ZERO;
-    $args .= " --mysql-check-charset=1" if $tsOpt{bmk_check_character_set} > ZERO;
+    # Charset and partitioning (MySQL/MariaDB only)
+    if ($tsOpt{db_driver} ne 'pgsql') {
+        $args .= " --mysql-table-partitions=" . $tsOpt{bmk_partitions}
+            if $tsOpt{bmk_partitions} > ZERO;
+        $args .= " --mysql-check-charset=1"
+            if $tsOpt{bmk_check_character_set} > ZERO;
+    }
 
     # Debug flags
     $args .= " --debug=on" if $tsOpt{debug_sysbench};
@@ -2757,12 +2811,11 @@ sub SetConnectionArgs {
 
     $tsOpt{args} = $args;
 
-    #PrintVerbose($_sca."Connection Args:");
-    #PrintVerbose($tsOpt{args});
     StageEnd($_sca);
-
     return OK;
 }
+
+
 #-----------------------------------------------------------------------------
 # SetLoadArgs
 #
@@ -2821,7 +2874,7 @@ sub SetLoadArgs {
     PrintVerbose($_sla."Lua Script Directory = ".$tsOpt{lua_scripts_dir});
     PrintVerbose($_sla."Lua Script           = ".$tsOpt{oltp_lua_script});
     my $sysbench_args = "'$tsState{target_lua} $tsOpt{args}'";
-    $tsOpt{load_args} = $args; 
+    $tsOpt{load_args} = $args;
     $tsOpt{load_args} .= " --sysbench-args=" . $sysbench_args;
     $tsOpt{load_args} = $args;
     PrintVerbose($_sla . "Load Args: ".$tsOpt{load_args});
@@ -2920,7 +2973,7 @@ sub SingleTestRun {
     $test_case //= '';
     $m_threads    = int($m_threads // 0) || 1;   # ensure a positive integer
     $m_runType   //= '';
- 
+
     my $_str = StageStart($_me." -> SingleTestRun ->");
     my $m_duration = $options{duration};
     $m_runType  = uc($m_runType);
@@ -2980,6 +3033,13 @@ sub VerifyOptions {
     my $_vo = "$_me -> VerifyOptions ->";
 
     # Validate oltp_skip_trx
+    # PostgreSQL sysbench driver does not support skip-trx; force it off.
+    if (defined $tsOpt{db_driver} && $tsOpt{db_driver} eq 'pgsql') {
+        if (lc($tsOpt{oltp_skip_trx}) eq 'on') {
+            PrintWarning($_vo."oltp_skip_trx=on is not supported by pgsql driver; forcing to off");
+            $tsOpt{oltp_skip_trx} = "off";
+        }
+    }
     if (lc($tsOpt{oltp_skip_trx}) ne "on" && lc($tsOpt{oltp_skip_trx}) ne "off") {
         PrintError($_vo."Invalid value for oltp_skip_trx: $tsOpt{oltp_skip_trx}");
         PrintVerbose($_vo."Must be \"on\" or \"off\"");
@@ -3037,6 +3097,34 @@ sub VerifyOptions {
     }
 
     return OK;
+}
+
+################################################################################
+# NormalizeDBType
+#
+# PURPOSE:
+#     Normalize an incoming database type string to the canonical sysbench
+#     driver name used in --db-driver. Called by ValidateTargetWithSuite().
+#
+# CANONICAL MAPPINGS:
+#     mariadb, maria, mariadbd -> mysql
+#     mysql, mysqld            -> mysql
+#     postgres, postgresql,
+#     pgsql                    -> pgsql
+#
+# RETURNS:
+#     Canonical driver string on success; undef on unknown input.
+################################################################################
+sub NormalizeDBType {
+    my ($t) = @_;
+    return undef unless defined $t && length $t;
+    $t = lc $t;
+    $t =~ s/^\s+|\s+$//g;
+
+    return "mysql" if $t =~ /^(mariadb|maria|mariadbd|mysql|mysqld)$/;
+    return "pgsql" if $t =~ /^(postgres|postgresql|pgsql)$/;
+
+    return undef;
 }
 
 #############################################################################

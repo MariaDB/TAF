@@ -1,2 +1,0 @@
-/usr/bin/ar qc libsbmysql.a CMakeFiles/sbmysql.dir/drv_mysql.c.o
-/usr/bin/ranlib libsbmysql.a

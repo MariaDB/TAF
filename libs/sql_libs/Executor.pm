@@ -3,7 +3,7 @@ package sql_libs::Executor;
 # sql_libs::Executor
 #
 # Created: January 2026
-# Last Modified: June 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -391,8 +391,11 @@ sub DbCreateDatabase {
     my $db = $ctx->{options}{database}
         or croak "DbCreateDatabase: ctx->{options}{database} is undefined";
 
+    my $user = $ctx->{options}{db_user};
+
     my $sql = _LoadDialect($ctx, "create_database");
     $sql =~ s/\{db\}/$db/g;
+    $sql =~ s/\{user\}/$user/g if defined $user;
 
     return DbExecuteNoReturnQuery($sql, $ctx);
 }
@@ -570,6 +573,30 @@ sub _BuildCommand {
     croak "_BuildCommand requires db_port or db_socket in options"
         unless defined $connection;
 
+    my $maker = _NormalizeMaker($ctx->{taf_var}{db_maker} // '');
+
+    # PostgreSQL uses psql syntax which differs from MySQL-family clients
+    if ($maker eq 'postgres') {
+        my $cmd = '';
+        $cmd .= "PGPASSWORD='$pass' " if defined $pass;
+        $cmd .= "$client -U $user";
+        # Always use TCP loopback — pg_hba.conf allows 127.0.0.1; db_socket is MySQL-style
+        my $pg_port = $opt->{db_port} // 5432;
+        $cmd .= " -h 127.0.0.1 -p $pg_port";
+        # Connect to maintenance database for DDL; -q suppresses notices
+        $cmd .= " -d postgres -q";
+        # SSL for postgres
+        if ($opt->{ssl_enabled}) {
+            $cmd .= " --set=sslmode=require";
+            $cmd .= " --set=sslrootcert=$opt->{ssl_ca}"  if $opt->{ssl_ca};
+            $cmd .= " --set=sslcert=$opt->{ssl_cert}"    if $opt->{ssl_cert};
+            $cmd .= " --set=sslkey=$opt->{ssl_key}"      if $opt->{ssl_key};
+        }
+        $cmd .= " $extra" if $extra;
+        $cmd .= " -c \"$sql\"";
+        return $cmd;
+    }
+
     my $cmd = "$client -u $user";
 
     if (defined $pass) {
@@ -581,11 +608,11 @@ sub _BuildCommand {
     } else {
         $cmd .= " --host=$host --port=$connection --protocol=tcp";
     }
-    my $maker = _NormalizeMaker($ctx->{taf_var}{db_maker});
+    $maker = _NormalizeMaker($ctx->{taf_var}{db_maker});
     # SSL options (normalized earlier in TAF)
     if ($opt->{ssl_enabled}) {
 
-       if ($maker eq 'mariadb' || $maker eq 'mysql') {
+      if ($maker eq 'mariadb' || $maker eq 'mysql') {
             $cmd .= " --ssl-ca=$opt->{ssl_ca}"               if $opt->{ssl_ca};
             $cmd .= " --ssl-cert=$opt->{ssl_cert}"           if $opt->{ssl_cert};
             $cmd .= " --ssl-key=$opt->{ssl_key}"             if $opt->{ssl_key};

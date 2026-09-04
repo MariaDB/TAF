@@ -3,9 +3,9 @@ package TAF::ActionWrappers;
 # TAF::ActionWrappers
 #
 # Created: December 2025
-# Last Modified: June 2026
+# Last Modified: August 2026
 #
-# Version: 2.5
+# Version: 4.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -680,30 +680,37 @@ sub _EnsureInstallAndPlugin {
 # _EnsureInstallResolved
 #
 # Purpose:
-#     Internal helper to guarantee that the database software installation has
-#     been resolved and validated exactly once.
+#     Internal sanity check to confirm that the database software installation
+#     has already been resolved and validated by the DB configuration handler.
 #
 # Parameters:
 #     $ctx : Framework context handle.
 #
 # Behavior:
 #     - Checks ctx->{taf_var}{db_software_install_resolved}.
-#     - If FALSE, calls _ResolveAndValidateInstall().
-#     - Marks the flag TRUE on success.
+#     - If TRUE, install was resolved earlier and the action may proceed.
+#     - If FALSE, this indicates a framework misuse (DB actions invoked before
+#       DB config resolution). An error is returned.
 #
 # Returns:
-#     OK    : install resolved.
-#     ERROR : resolution or validation failed.
+#     OK    : install was previously resolved.
+#     ERROR : install not resolved; DB actions cannot continue.
 #===============================================================================
 sub _EnsureInstallResolved {
     my ($ctx) = @_;
 
-    # Already resolved? Nothing to do.
-    return OK if $ctx->{taf_var}{db_software_install_resolved};
+    # If DB software install was not resolved earlier by DB config handler,
+    # this is a framework bug / misuse of actions.
+    if (!$ctx->{taf_var}{db_software_install_resolved}) {
+        my $res = TAF::DatabaseSoftwareInstalls::ResolveAndValidateInstall($ctx);
+        if ($res != OK) {
+            PrintError("Database software install not resolved before DB action");
+            return ERROR;
+        }
+    }
 
-    # Resolve + validate the install.
-    my $rc = _ResolveAndValidateInstall($ctx);
-    return ERROR if $rc != OK;
+    # Already resolved, nothing to do.
+    return OK;
 }
 
 #===============================================================================
@@ -734,27 +741,6 @@ sub _EnsurePluginLoaded {
     return ERROR if $rc != OK;
 
     return OK;
-}
-
-#===============================================================================
-# _ResolveAndValidateInstall
-#
-# Purpose:
-#     Resolve the active installation directory and validate its correctness.
-#
-# Parameters:
-#     $ctx : Framework context handle.
-#
-# Behavior:
-#     - Delegates to TAF::DatabaseSoftwareInstalls::ResolveAndValidateInstall().
-#
-# Returns:
-#     OK    : install resolved and validated.
-#     ERROR : resolution or validation failed.
-#===============================================================================
-sub _ResolveAndValidateInstall{
-    my ($ctx) = @_;
-    return TAF::DatabaseSoftwareInstalls::ResolveAndValidateInstall($ctx);
 }
 
 #===============================================================================
@@ -834,7 +820,6 @@ sub _DbInit {
     return ERROR if _EnsureInstallAndPlugin($ctx) != OK;
 
     # Framework-level tmp_dir and runtime cleanup (before any plugin touches it)
-    TAF::Utilities::CleanTmpDir($ctx);
     TAF::Utilities::CleanRuntimeDir($ctx);
 
     # Delegate to the database subsystem

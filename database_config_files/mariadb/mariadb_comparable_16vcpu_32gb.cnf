@@ -1,0 +1,92 @@
+# =============================================================================
+# mariadb_comparable_16vcpu_32gb.cnf - Cross-Engine-Comparable Tuning for
+# MariaDB, sized for a 16 vCPU / 32GB RAM host
+#
+# Created: August 2026 -- scaled-up sibling of mariadb_comparable_4vcpu_16gb.cnf
+# RAM budget reduced from an initial 64GB draft to 32GB: August 2026
+#
+# PAIRS WITH: postgresql/postgresql_comparable_16vcpu_32gb.conf
+# SEE ALSO:   ../comparable-configuration.md (full analysis, sizing rules,
+#             and the external OS/host conditions this file alone cannot
+#             guarantee)
+#
+# SIZING MODEL for this file (same ratios as the 4vCPU/16GB tier, scaled up
+# by the RAM factor 32GB/16GB = 2x, not 4x):
+#     - innodb_buffer_pool_size = 25% of host RAM (8G of 32G) -- same
+#       fraction as the 4vCPU/16GB tier, so going from one tier to the
+#       other is a like-for-like scale-up, not a different tuning
+#       philosophy.
+#     - innodb_log_file_size kept at the same 1:4 ratio to the buffer pool
+#       (2G for an 8G pool).
+#     - I/O thread count = 1x vCPU count (16 read + 16 write on 16 vCPUs),
+#       not the 2x ratio the 4vCPU tier uses. Oversubscribing I/O threads
+#       2x past the core count is reasonable when there are few cores to
+#       protect from context-switch overhead; at 16 cores that headroom is
+#       less necessary, and MariaDB has no data suggesting throughput past
+#       ~16 concurrent I/O threads on typical NVMe/vSAN backends -- treat
+#       this as a starting point to re-measure, not a law. This ratio is
+#       driven by vCPU count, not RAM, so it is unchanged from the earlier
+#       64GB draft of this tier.
+#     - innodb_io_capacity/_max scaled 2x in step with the buffer pool/RAM
+#       scale-up (2000/4000 -> 4000/8000), on the ASSUMPTION that a
+#       16 vCPU / 32GB host is paired with proportionally faster storage
+#       than the 4 vCPU / 16GB tier. This is the one number in this file
+#       that is a modeling assumption rather than a measured fact --
+#       verify against the actual device's rated IOPS before trusting it;
+#       see comparable-configuration.md.
+#
+# TARGET VERSION:
+#     MariaDB 12.2.2 (see mariadb_default.cnf for the full stock-default
+#     reference and its provenance notes).
+#
+# IMPORTANT -- innodb_redo_log_capacity does NOT exist in MariaDB:
+#     Verified directly against this checkout's
+#     storage/innobase/handler/ha_innodb.cc: the only redo-log-size sysvar
+#     registered there is innodb_log_file_size (default 96MB). MariaDB
+#     never adopted MySQL 8.0.30+'s innodb_redo_log_capacity; setting it
+#     here would make mariadbd refuse to start ("unknown variable").
+# =============================================================================
+
+[mysqld]
+
+# ---------------------------------------------------------------------------
+# Memory -- buffer pool (25% of 32GB host RAM)
+# Stock default: 128M. Matches postgresql_comparable_16vcpu_32gb.conf's
+# shared_buffers = 8GB.
+# ---------------------------------------------------------------------------
+innodb_buffer_pool_size        = 8G
+
+# ---------------------------------------------------------------------------
+# InnoDB Redo Log (1:4 ratio to buffer pool, same ratio as the 4vCPU tier)
+# Stock default: 96M. Matches max_wal_size = 2GB on the PG side.
+# ---------------------------------------------------------------------------
+innodb_log_file_size           = 2G
+
+# ---------------------------------------------------------------------------
+# I/O capacity -- background flush/purge rate limit
+# Scaled 2x from the 4vCPU/16GB tier's 2000/4000, matching this tier's 2x
+# RAM/buffer-pool scale-up, assuming proportionally faster storage.
+# RE-VERIFY against real device specs.
+# ---------------------------------------------------------------------------
+innodb_io_capacity             = 4000
+innodb_io_capacity_max         = 8000
+
+# ---------------------------------------------------------------------------
+# I/O threads -- 1x vCPU count (16 vCPUs -> 16 read + 16 write)
+# Stock default: 4 read + 4 write.
+# ---------------------------------------------------------------------------
+innodb_read_io_threads         = 16
+innodb_write_io_threads        = 16
+
+# ---------------------------------------------------------------------------
+# Thread handling (not vCPU-dependent; applies to both size tiers)
+# Stock default: one-thread-per-connection.
+# ---------------------------------------------------------------------------
+thread_handling                = pool-of-threads
+
+# ---------------------------------------------------------------------------
+# NOT changed here -- see comparable-configuration.md for why:
+#   innodb_flush_method (default fsync) -- matches PG's non-O_DIRECT default.
+#   innodb_flush_neighbors (default 1) -- storage-medium decision, not a
+#     sizing one; revisit only for a known NVMe/vSAN target.
+# ---------------------------------------------------------------------------

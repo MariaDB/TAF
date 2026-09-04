@@ -1,9 +1,9 @@
 #===============================================================================
 # create_backend.sql
-# TAF-Backend-Parser Version: 1.0
+# TAF-Backend-Parser Version: 2.0
 #
 # Created: May 2026
-# Last Modified: June 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -100,31 +100,35 @@ CREATE TABLE system_under_test (
     UNIQUE KEY uq_system_hash (system_hash)
 );
 
-
 #===============================================================================
 # TABLE GROUP: DATABASE CONFIGURATION TABLES
 #
 # PURPOSE:
-#     These tables store normalized database configuration sets used during
-#     performance testing. Configurations are deduplicated using a stable hash
-#     so that identical config files map to a single config_id.
+#     These tables store canonicalized database configuration sets used during
+#     performance testing. Each configuration is assigned a stable SHA-256 hash
+#     so identical config contents map to a single config_id. The configuration
+#     tables store identity + canonical parameter/value pairs only.
+#
+#     Provenance metadata (origin, source file, tmp file) is run-specific and is
+#     stored in test_run, not in db_config_set.
 #
 # TABLES:
 #     db_config_set
-#         - One row per unique configuration file.
-#         - config_hash is a SHA-256 hash of the normalized config contents.
-#         - Used as a foreign key by test_run to associate runs with configs.
+#         - One row per unique configuration identity.
+#         - config_hash is a SHA-256 hash of canonicalized config contents.
+#         - Contains no provenance; provenance belongs to test_run.
+#         - Referenced by test_run to associate runs with their configuration.
 #
 #     db_config_param
-#         - Stores individual configuration parameters for each config set.
-#         - Allows flexible parameter/value storage without schema changes.
-#         - Supports optional metadata such as source file and notes.
+#         - Stores individual canonical parameter/value pairs for each config.
+#         - Provides schema-independent storage of normalized config contents.
 #
 # NOTES:
-#     - The pair (db_config_set, db_config_param) forms a normalized,
-#       deduplicated representation of database configuration files.
-#     - config_hash enforces uniqueness across all stored configurations.
+#     - db_config_set provides identity only.
+#     - db_config_param provides normalized contents.
+#     - config_hash enforces deduplication across all stored configurations.
 #===============================================================================
+
 CREATE TABLE db_config_set (
     id            BIGINT PRIMARY KEY AUTO_INCREMENT,
     config_name   VARCHAR(255) NOT NULL,
@@ -149,35 +153,64 @@ CREATE TABLE db_config_param (
 # TABLE: test_run
 #
 # PURPOSE:
-#     Stores one row per executed test case, capturing the full identity of the
-#     environment, TAF harness versions, database under test, configuration
-#     reference, run-level metadata, workload identity hash, comparison
-#     thresholds, and all runtime metadata extracted from the raw results.
+#     Stores one row per executed test case, capturing the complete identity of
+#     the environment, TAF harness versions, database under test, configuration
+#     reference, run-level metadata, workload identity, comparison thresholds,
+#     provenance metadata, and all runtime metadata extracted from the raw
+#     results.
 #
 # CONTENTS:
 #     - Logical test identity (test_name, suite_name, suite_version)
 #     - System identity via FK to system_under_test
 #     - Database identity (maker, engine, version, user, port, socket, install dir)
 #     - Configuration identity via FK to db_config_set
-#     - TAF harness and client program versions
-#     - Baseline flag for regression comparison
-#     - Default comparison thresholds (warning/fail/gain/duration drift)
-#     - Full run lifecycle (start/end time, duration, warmup settings)
-#     - Test suite metadata (revision, PM file, row/table counts, range size)
-#     - Thread list used for the test suite
-#     - Arbitrary metadata stored as JSON
+#     - TAF harness, client program, taf_version, framework_patch
+#
+#     - Test case tagging:
+#         * test_case_tag (user-defined semantic tag)
+#         * autogen_tags (machine-generated JSON identity tags)
+#
+#     - Test case properties:
+#         * raw_test_run_properties (full properties file as provided by runner)
+#         * canonical_test_run_properties (normalized key/value representation)
+#
+#     - DB config provenance (run-specific):
+#         * db_config_origin       (inline, file, metadata, tmp, etc.)
+#         * db_config_source_file  (path if applicable)
+#         * db_config_tmp_file     (path if applicable)
+#
+#     - Baseline metadata:
+#         * is_baseline, baseline_notes, baseline_set_at
+#         * pct_warning, pct_fail, pct_gain, pct_duration_drift
+#
+#     - Run lifecycle:
+#         * test_timestamp, test_end_time, test_duration
+#         * warmup_threads, warmup_duration
+#
+#     - Test suite metadata:
+#         * test_suite_revision, test_suite_pm_file
+#         * number_of_rows, number_of_tables, range_size
+#
+#     - Connector + thread list:
+#         * connector, thread_list
+#
+#     - Raw metadata:
+#         * metadata (LONGTEXT blob from runner)
 #
 # UNIQUE IDENTITY:
 #     (system_id, config_id, suite_name, test_name, test_timestamp)
 #
 # NOTES:
 #     - workload_hash groups runs into workload families.
-#     - pct_* fields define comparison thresholds; defaults may be overridden
-#       when marking a run as a baseline.
-#     - metadata_json stores raw metadata from the runner.
+#     - raw_test_run_properties includes DB config block as part of the full
+#       properties file; canonical_test_run_properties is used for machine
+#       comparison and normalization.
+#     - autogen_tags provide structured identity metadata for dashboards and
+#       comparison tools.
+#     - DB config provenance is run-specific and stored here, not in db_config_set.
 #===============================================================================
 
-    CREATE TABLE test_run (
+CREATE TABLE test_run (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
 
     # identity of the test
@@ -214,6 +247,19 @@ CREATE TABLE db_config_param (
 
     # workload identity hash (excludes duration)
     workload_hash           CHAR(64),
+
+    # NEW: test case tagging
+    test_case_tag           VARCHAR(255),
+    autogen_tags            LONGTEXT,
+
+    # NEW: full properties file (name + contents)
+    test_run_properties              VARCHAR(255),   -- generated_properties_file (NAME)
+    test_run_properties_contents     LONGTEXT,       -- generated_properties_file_contents (CONTENTS)
+
+    # NEW: DB config provenance (run-specific)
+    db_config_origin        VARCHAR(255),
+    db_config_source_file   VARCHAR(255),
+    db_config_tmp_file      VARCHAR(255),
 
     # baseline info
     is_baseline             BOOLEAN DEFAULT FALSE,
@@ -673,6 +719,11 @@ DELIMITER ;
 #     metadata, configuration reference, TAF/client versions, workload
 #     parameters, lifecycle timestamps, and raw metadata.
 #
+#     Additional run-specific metadata (test_case_tag, autogen_tags,
+#     test_run_properties, test_run_properties_contents, and DB config
+#     provenance fields) are NOT inserted here. They are populated by the
+#     ingestion layer after this procedure returns the new test_run.id.
+#
 # WHAT THIS PROCEDURE DOES:
 #     - Enforces uniqueness on (system_id, config_id, suite_name,
 #       test_name, test_timestamp).
@@ -685,6 +736,9 @@ DELIMITER ;
 #     - Does not compute workload_hash.
 #     - Does not insert iteration-level metrics (handled by insert_result).
 #     - Does not perform baseline comparison or baseline assignment.
+#     - Does not insert test_case_tag or autogen_tags.
+#     - Does not insert test_run_properties or test_run_properties_contents.
+#     - Does not insert DB config provenance (origin, source_file, tmp_file).
 #
 # PARAMETERS:
 #     IN  p_test_name              Logical test name.
@@ -707,6 +761,8 @@ DELIMITER ;
 #     IN  p_database_under_test    Schema/database name under test.
 #
 #     IN  p_config_id              FK to db_config_set.
+#     IN  p_test_run_properties           Generated properties file name.
+#     IN  p_test_run_properties_contents  Generated properties file contents.
 #
 #     IN  p_is_baseline            Whether this run is marked as baseline.
 #
@@ -720,8 +776,7 @@ DELIMITER ;
 #
 #     IN  p_test_timestamp         Start time of the run.
 #     IN  p_test_end_time          End time of the run (nullable).
-#     IN  p_test_duration_seconds  Actual duration (deprecated name; stored as
-#                                  test_duration in table).
+#     IN  p_test_duration          Actual duration in seconds.
 #
 #     IN  p_warmup_threads         Warmup thread count (nullable).
 #     IN  p_warmup_duration        Warmup duration (nullable).
@@ -735,7 +790,7 @@ DELIMITER ;
 #     IN  p_connector              Connector type (e.g., JDBC).
 #     IN  p_thread_list            Thread list string (e.g., "4,8,16,32").
 #
-#     IN  p_metadata_json          Raw metadata blob (JSON).
+#     IN  p_metadata               Raw metadata blob (JSON or text).
 #
 #     OUT p_test_run_id            Newly inserted test_run.id.
 #     OUT p_reject_reason          NULL or 'duplicate_identity'.
@@ -743,8 +798,8 @@ DELIMITER ;
 # NOTES:
 #     - workload_hash is intentionally inserted as NULL; DbIngest computes it
 #       after all iteration results are inserted.
-#     - p_test_duration_seconds is accepted for backward compatibility but is
-#       stored in test_duration.
+#     - Additional run-specific metadata is populated via UPDATE test_run
+#       after this procedure completes.
 #===============================================================================
 DROP PROCEDURE IF EXISTS insert_test_run;
 
@@ -773,6 +828,19 @@ CREATE OR REPLACE PROCEDURE insert_test_run(
 
     -- config reference
     IN  p_config_id              BIGINT,
+
+    -- NEW: test case tagging
+    IN  p_test_case_tag          VARCHAR(255),
+    IN  p_autogen_tags           LONGTEXT,
+
+    -- NEW: full properties file (name + contents)
+    IN  p_test_run_properties           VARCHAR(255),
+    IN  p_test_run_properties_contents  LONGTEXT,
+
+    -- NEW: DB config provenance (run-specific)
+    IN  p_db_config_origin       VARCHAR(255),
+    IN  p_db_config_source_file  VARCHAR(255),
+    IN  p_db_config_tmp_file     VARCHAR(255),
 
     -- baseline flag
     IN  p_is_baseline            BOOLEAN,
@@ -808,7 +876,7 @@ CREATE OR REPLACE PROCEDURE insert_test_run(
     IN  p_thread_list            VARCHAR(255),
 
     -- raw metadata
-    IN  p_metadata              LONGTEXT,
+    IN  p_metadata               LONGTEXT,
 
     OUT p_test_run_id            BIGINT,
     OUT p_reject_reason          VARCHAR(255)
@@ -832,7 +900,7 @@ proc_end: BEGIN
         LEAVE proc_end;
     END IF;
 
-    -- Insert new row
+    -- Insert new row including all NEW fields
     INSERT INTO test_run (
         test_name,
         system_id,
@@ -855,6 +923,16 @@ proc_end: BEGIN
 
         config_id,
         workload_hash,
+
+        -- NEW fields
+        test_case_tag,
+        autogen_tags,
+        test_run_properties,
+        test_run_properties_contents,
+        db_config_origin,
+        db_config_source_file,
+        db_config_tmp_file,
+
         is_baseline,
 
         pct_warning,
@@ -904,7 +982,17 @@ proc_end: BEGIN
         p_database_under_test,
 
         p_config_id,
-        NULL,                       -- workload_hash computed later
+        NULL,   -- workload_hash computed later
+
+        -- NEW fields
+        p_test_case_tag,
+        p_autogen_tags,
+        p_test_run_properties,
+        p_test_run_properties_contents,
+        p_db_config_origin,
+        p_db_config_source_file,
+        p_db_config_tmp_file,
+
         p_is_baseline,
 
         COALESCE(p_pct_warning,        3),
@@ -940,6 +1028,7 @@ proc_end: BEGIN
 END$$
 
 DELIMITER ;
+
 
 #===============================================================================
 # PROCEDURE: insert_result
@@ -1074,6 +1163,54 @@ END$$
 
 DELIMITER ;
 
+#===============================================================================
+# PROCEDURE: update_autogen_tags
+#
+# PURPOSE:
+#     Stores the machine-generated autogen_tags JSON for a completed test run.
+#     This procedure is invoked after ingest once the Java layer has computed
+#     the structured identity tags derived from:
+#         - logical test identity
+#         - system identity
+#         - DB identity
+#         - configuration identity
+#         - workload shape
+#         - suite metadata
+#
+#     The autogen_tags column is used for:
+#         - dashboard identity grouping
+#         - workload family classification
+#         - metadata-driven comparisons
+#         - search and filtering in reporting layers
+#
+# CONTENTS:
+#     - Updates exactly one column (autogen_tags) in test_run.
+#     - Does not validate the JSON or recompute it.
+#     - Does not modify workload_hash, baseline flags, thresholds, or properties.
+#
+# RELATIONSHIPS:
+#     - test_run.id must reference an existing row.
+#     - autogen_tags is a LONGTEXT JSON blob.
+#
+# NOTES:
+#     - Called once per test run, after ingest has computed the tags.
+#     - Tags must be deterministic and stable across runs.
+#===============================================================================
+DROP PROCEDURE IF EXISTS update_autogen_tags;
+
+DELIMITER $$
+
+CREATE PROCEDURE update_autogen_tags(
+    IN p_test_run_id BIGINT,
+    IN p_autogen_tags LONGTEXT
+)
+BEGIN
+    UPDATE test_run
+       SET autogen_tags = p_autogen_tags
+     WHERE id = p_test_run_id;
+END$$
+
+DELIMITER ;
 
 #===============================================================================
 # PROCEDURE: set_baseline

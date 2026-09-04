@@ -2,8 +2,8 @@
 # hammerdb-tproch.pm - HammerDB TPROCH Test Suite for TAF
 #
 # Created: October 2025
-# Last Modified: January 2026
-# Version: 1.0
+# Last Modified: August 2026
+# Version: 4.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -92,7 +92,7 @@
 ## Metadata
 ## --------------------------------------------------------------------------
 our $properties_prefix = "hammerdb_tproch";
-our $ts_version        = 1;
+our $ts_version        = 4;
 our $ts_revision       = 0;
 
 # Additional metadata (example placeholders, expand as needed)
@@ -108,6 +108,9 @@ our @legalTests   = (@defaultTests);
 
 # tproch-specific options
 our %tsOpt = (
+    # Hammerdb *.db in tmp
+    always_recreate_hammerdb_state => undef,
+    hammerdb_state_dir             => undef,
     # Agent
     # Core identity and agent
     agent                 => undef,
@@ -133,10 +136,8 @@ our %tsOpt = (
     refresh_verbose   => undef,
 
     # Output format toggles
-    include_json_timing   => undef,
     include_json_result   => undef,
     include_json_metrics  => undef,
-    include_html_timing   => undef,
     include_html_result   => undef,
     include_html_metrics  => undef,
 
@@ -403,6 +404,10 @@ sub PreTestSetup {
     if(lc($tsOpt{db_type}) eq "mariadb"){
         $tsOpt{db_type} = "maria";
     }
+
+    # Remove hammder db state db's in tmp from previous runs if the past metrics
+    # and job id info is not needed to save space. 
+    ResetHammerdbState();
 
     $tsState{pre_test_done} = TRUE;
     StageEnd($_pts);
@@ -1397,6 +1402,12 @@ sub CreateTprochConfigFile {
         or return PrintError("$_wc Cannot write $config_path");
 
     my $db_type = lc($tsOpt{db_type} // '');
+    # HammerDB's dbset/diset prefix for postgres is "pg", not "postgres"
+    # (see client_source/hammerdb/HammerDB-6.0/config/database.xml and
+    # config/postgresql.xml, which use pg_host/pg_port/pg_sslmode/...).
+    # GetTprochDriverKeys() below already expects 'pg' -- remap here so
+    # every dbset/diset line emitted by this function agrees.
+    $db_type = 'pg' if $db_type eq 'postgres';
 
     #---------------------------------------------------------------------
     # Header
@@ -1407,14 +1418,26 @@ sub CreateTprochConfigFile {
 
     #---------------------------------------------------------------------
     # Connection dictionary (socket vs TCP)
+    #
+    # HammerDB's PostgreSQL driver has no unix-socket support at all -- it
+    # always connects over TCP, and its dictionary has no "pg_socket" key.
+    # For PG we always take the TCP path and always set both pg_host and
+    # pg_port. The host is only forced to 127.0.0.1 when the user actually
+    # configured taf.host=localhost.
     #---------------------------------------------------------------------
-    if ($options{db_clients_use_unix_socket}) {
+    if ($options{db_clients_use_unix_socket} && $db_type ne 'pg') {
         print $fh "diset connection ${db_type}_socket $options{db_socket}\n";
         print $fh "diset connection ${db_type}_host \"127.0.0.1\"\n";
     } else {
-        print $fh "diset connection ${db_type}_host $options{host}\n";
+        my $conn_host =
+            ($db_type eq 'pg' && $options{host} eq 'localhost')
+                ? '127.0.0.1'
+                : $options{host};
+
+        print $fh "diset connection ${db_type}_host \"$conn_host\"\n";
         print $fh "diset connection ${db_type}_port $options{db_port}\n";
     }
+
 
     #---------------------------------------------------------------------
     # SSL (TAF is the single source of truth)
@@ -1433,7 +1456,7 @@ sub CreateTprochConfigFile {
                 if $options{db_ssl_cipher};
         }
 
-        elsif ($db_type eq 'postgres') {
+        elsif ($db_type eq 'pg') {
             print $fh "diset connection ${db_type}_sslmode $options{db_ssl_mode}\n";
             print $fh "diset connection ${db_type}_sslrootcert $options{db_ssl_ca}\n"
                 if $options{db_ssl_ca};
@@ -1480,16 +1503,6 @@ sub CreateTprochConfigFile {
         my $agent_id   = $tsOpt{agent_port} // 1;
         print $fh "metset agent_hostname $agent_host\n";
         print $fh "metset agent_id $agent_id\n";
-    }
-
-    #---------------------------------------------------------------------
-    # Output flags
-    #---------------------------------------------------------------------
-    foreach my $type (qw(timing result metrics)) {
-        my $json_key = "include_json_$type";
-        my $html_key = "include_html_$type";
-        print $fh "set output_json_$type 1\n"  if $tsOpt{$json_key};
-        print $fh "set output_chart_$type 1\n" if $tsOpt{$html_key};
     }
 
     close($fh);
@@ -1542,30 +1555,27 @@ sub ExtractJobHtmlBlocks {
     return (undef, undef, undef) unless $job_stdout_path && -e $job_stdout_path;
 
     open my $fh, '<', $job_stdout_path or return (undef, undef, undef);
-    my ($timing_html, $result_html, $metrics_html, $capture) = ('','','','');
+    my ($result_html, $metrics_html, $capture) = ('','','','');
 
     while (my $line = <$fh>) {
-        if    ($line =~ /=== JOB TIMING CHART HTML START ===/)  { $capture = 'timing';  next; }
-        elsif ($line =~ /=== JOB TIMING CHART HTML END ===/)    { $capture = '';        next; }
-        elsif ($line =~ /=== JOB RESULT CHART HTML START ===/)  { $capture = 'result';  next; }
+        if ($line =~ /=== JOB RESULT CHART HTML START ===/)  { $capture = 'result';  next; }
         elsif ($line =~ /=== JOB RESULT CHART HTML END ===/)    { $capture = '';        next; }
         elsif ($line =~ /=== JOB METRICS CHART HTML START ===/) { $capture = 'metrics'; next; }
         elsif ($line =~ /=== JOB METRICS CHART HTML END ===/)   { $capture = '';        next; }
 
-        $timing_html  .= $line if $capture eq 'timing';
         $result_html  .= $line if $capture eq 'result';
         $metrics_html .= $line if $capture eq 'metrics';
     }
     close $fh;
 
-    for ($timing_html, $result_html, $metrics_html) {
+    for ($result_html, $metrics_html) {
         next unless defined $_;
         s/^\s+//;
         s/\s+$//;
     }
 
     StageEnd($_eh);
-    return ($timing_html, $result_html, $metrics_html);
+    return ($result_html, $metrics_html);
 }
 
 #-----------------------------------------------------------------------------
@@ -1573,7 +1583,7 @@ sub ExtractJobHtmlBlocks {
 #
 # PURPOSE:
 #     Parse the job stdout file produced by a TPROCH run and extract the
-#     raw JSON blocks for timing, result, and metrics data. These blocks
+#     raw JSON blocks for result, and metrics data. These blocks
 #     are delimited by explicit START and END markers emitted by the
 #     workload.
 #
@@ -1583,7 +1593,7 @@ sub ExtractJobHtmlBlocks {
 #     - START and END markers must appear in well-formed pairs for each
 #       JSON block type.
 #     - Returns a three-element list containing:
-#           (timing_json, result_json, metrics_json)
+#           (result_json, metrics_json)
 #
 # WHEN CALLED:
 #     - During post-processing when the framework needs to extract JSON
@@ -1608,30 +1618,27 @@ sub ExtractJobJsonBlocks {
     return (undef, undef, undef) unless $job_stdout_path && -e $job_stdout_path;
 
     open my $fh, '<', $job_stdout_path or return (undef, undef, undef);
-    my ($timing_raw, $result_raw, $metrics_raw, $capture) = ('','','','');
+    my ($result_raw, $metrics_raw, $capture) = ('','','','');
 
     while (my $line = <$fh>) {
-        if    ($line =~ /=== JOB TIMING JSON START ===/)  { $capture = 'timing';  next; }
-        elsif ($line =~ /=== JOB TIMING JSON END ===/)    { $capture = '';        next; }
-        elsif ($line =~ /=== JOB RESULT JSON START ===/)  { $capture = 'result';  next; }
+        if ($line =~ /=== JOB RESULT JSON START ===/)  { $capture = 'result';  next; }
         elsif ($line =~ /=== JOB RESULT JSON END ===/)    { $capture = '';        next; }
         elsif ($line =~ /=== JOB METRICS JSON START ===/) { $capture = 'metrics'; next; }
         elsif ($line =~ /=== JOB METRICS JSON END ===/)   { $capture = '';        next; }
 
-        $timing_raw  .= $line if $capture eq 'timing';
         $result_raw  .= $line if $capture eq 'result';
         $metrics_raw .= $line if $capture eq 'metrics';
     }
     close $fh;
 
-    for ($timing_raw, $result_raw, $metrics_raw) {
+    for ($result_raw, $metrics_raw) {
         next unless defined $_;
         s/^\s+//;
         s/\s+$//;
     }
 
     StageEnd($_ej);
-    return ($timing_raw, $result_raw, $metrics_raw);
+    return ($result_raw, $metrics_raw);
 }
 
 #-----------------------------------------------------------------------------
@@ -1795,7 +1802,7 @@ sub GetTprochDriverKeys {
 #
 # PURPOSE:
 #     Collect and write all JSON and HTML artifacts produced by a TPROCH
-#     job run. Extracts timing, result, and metrics blocks from the job
+#     job run. Extracts result, and metrics blocks from the job
 #     stdout file and writes them to the results directory when enabled.
 #
 # CONTRACT:
@@ -1815,9 +1822,9 @@ sub GetTprochDriverKeys {
 #     $job_stdout_path   Path to the stdout file generated by the job.
 #
 # OUTPUT:
-#     - Writes timing.json, result.json, and metrics.json when enabled and
+#     - Writes result.json, and metrics.json when enabled and
 #       non-empty.
-#     - Writes timing.html, result.html, and metrics.html when enabled and
+#     - Writes result.html, and metrics.html when enabled and
 #       non-empty.
 #     - Returns OK on success, ERROR on invalid input.
 #
@@ -1832,24 +1839,22 @@ sub HarvestJobArtifacts {
     return ERROR unless defined $job_stdout_path && -e $job_stdout_path;
 
     # Extract JSON and HTML blocks from TPROCH run output
-    my ($timing_json, $result_json, $metrics_json) = ExtractJobJsonBlocks($job_stdout_path);
-    my ($timing_html, $result_html, $metrics_html) = ExtractJobHtmlBlocks($job_stdout_path);
+    my ($result_json, $metrics_json) = ExtractJobJsonBlocks($job_stdout_path);
+    my ($result_html, $metrics_html) = ExtractJobHtmlBlocks($job_stdout_path);
 
     # Maps for output
     my %json_map = (
-        timing  => $timing_json,
         result  => $result_json,
         metrics => $metrics_json,
     );
 
     my %html_map = (
-        timing  => $timing_html,
         result  => $result_html,
         metrics => $metrics_html,
     );
 
     # Write JSON files if enabled and non-empty
-    foreach my $type (qw(timing result metrics)) {
+    foreach my $type (qw(result metrics)) {
         my $json_flag = "include_json_$type";
         if (defined $tsOpt{$json_flag} && $tsOpt{$json_flag}) {
             if (defined $json_map{$type} && $json_map{$type} =~ /\S/) {
@@ -1861,7 +1866,7 @@ sub HarvestJobArtifacts {
     }
 
     # Write HTML files if enabled and non-empty
-    foreach my $type (qw(timing result metrics)) {
+    foreach my $type (qw(result metrics)) {
         my $html_flag = "include_html_$type";
         if (defined $tsOpt{$html_flag} && $tsOpt{$html_flag}) {
             if (defined $html_map{$type} && $html_map{$type} =~ /\S/) {
@@ -2004,7 +2009,7 @@ sub LaunchAgentAndWaitForReady {
     my ($results_dir) = @_;
     my $_la = StageStart($_me." -> LaunchAgentAndWaitForReady ->");
 
-    PrintVerbose($_la."Agent path: $tsOpt{agent}}");
+    PrintVerbose($_la."Agent path: $tsOpt{agent}");
     
     # Require agent path and port from tsOpt
     my $agent_path = $tsOpt{agent}      or return PrintError("$_la agent path not defined");
@@ -2393,7 +2398,6 @@ sub ProcessRunResults {
     my $dest  = File::Spec->catfile($results_dir, 'hdbxtprofile.log');
     my $out   = File::Spec->catfile($results_dir, 'run-results.out');
     my $tjson = File::Spec->catfile($results_dir, 'tcount.json');   # per-query counts/times
-    my $pjson = File::Spec->catfile($results_dir, 'timing.json');   # geomean + duration
 
     ############
     # Profile log: copy if present, then delete tmp
@@ -2423,7 +2427,6 @@ sub ProcessRunResults {
             duration         => $duration,
             queries          => $queries,   # hashref { Q1 => 11.25, Q2 => 0.59, ... }
             tcount_json_path => (-e $tjson ? $tjson : undef),
-            timing_json_path => (-e $pjson ? $pjson : undef),
         }
     ) != OK;
 
@@ -2708,7 +2711,7 @@ sub RunChecksum {
         return ERROR;
     }
 
-    PrintVerbose("Checksum [$label] complete");
+    PrintVerbose($_rc."Checksum [$label] complete");
     StageEnd($_rc);
     return OK;
 }
@@ -3055,6 +3058,60 @@ sub NormalizeDBType {
 
     return $t;  # fallback for future engines
 }
+
+###############################################################################
+# HammerDB State Reset
+#
+# PURPOSE:
+#     Remove stale HammerDB internal SQLite databases before a new run.
+#     HammerDB uses these .db files at runtime when metric collectors are
+#     enabled (JSON and HTML). TAF consumes only the metrics produced during
+#     the current run and does not use historical HammerDB state.
+#
+# WHY:
+#     - Prevents schema conflicts across HammerDB versions (for example,
+#       upgrading from 5.0 to 6.0).
+#     - Ensures a clean environment for TPROC-C and TPROC-H workloads.
+#     - Reduces disk usage for production test setups.
+#     - Avoids contamination from previous runs.
+#
+# PROPERTIES:
+#     always_recreate_hammerdb_state
+#         Boolean. If true, remove all *.db files from hammerdb_state_dir
+#         before starting a test suite. Default: true.
+#
+#     hammerdb_state_dir
+#         Directory containing HammerDB internal SQLite databases.
+#         Default: /tmp/
+#
+# NOTES:
+#     - TAF extracts metrics from JSON and HTML only when collectors are
+#       enabled in the test suite properties. Collectors are off (false)
+#       by default.
+#     - Past HammerDB .db files are not used by TAF. Only the metrics
+#       generated during the current run are consumed.
+#     - Users who want HammerDB to retain historical test data should set
+#       default always_recreate_hammerdb_state to false. (both tproc c and h)
+###############################################################################
+sub ResetHammerdbState {
+
+    return unless $tsOpt{always_recreate_hammerdb_state};
+    
+    my $_reset = StageStart($_me." -> ResetHammerdbState ->");
+    PrintVerbose($_reset." Removing hammerdb state db's from ".$tsOpt{hammerdb_state_dir});
+
+    my $dir = $tsOpt{hammerdb_state_dir} // '/tmp/';
+    opendir(my $dh, $dir) or return;
+
+    while (my $f = readdir($dh)) {
+        next unless $f =~ /\.(db|DB)$/;
+        unlink("$dir/$f");
+    }
+
+    closedir($dh);
+    StageEnd($_reset);
+}
+
 
 #############################################################################
 # Module terminator
