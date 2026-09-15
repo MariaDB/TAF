@@ -160,6 +160,8 @@ sub new {
 
         # Connectivity
         port           => $args{db_port} // 5432,
+        socket         => $args{db_socket},
+        
 
         # SSL (TAF unified SSL contract)
         ssl_mode       => $args{db_ssl_mode},
@@ -254,7 +256,6 @@ sub new {
 
     return $self;
 }
-
 
 ################################################################################
 # db_init
@@ -371,14 +372,14 @@ sub db_init {
     }
 
     # Build pg_ctl command
-    my @cmd = (
-        $pg_ctl,
-        'start',
-        "-D", $data_dir,
-        "-l", $log,
-        "-w",
-        "-t", $timeout,
-    );
+    my @cmd = ($pg_ctl,
+               'start',
+               "-D", $data_dir,
+               "-l", $log,
+               "-w",
+               "-t", $timeout,
+               # REQUIRED: force PostgreSQL to load the TAF-managed config
+               "-o", "-c config_file=$self->{config}",);
 
     # Extra args (no quoting)
     if ($self->{extra_args}) {
@@ -799,91 +800,69 @@ sub _db_run_initdb {
 # _db_apply_postgresql_conf
 #
 # PURPOSE:
-#     Apply postgresql.conf settings. If the user supplied a config file via
-#     db_config_file, its contents are appended to (not replaced) the
-#     postgresql.conf created by initdb. This preserves initdb-generated
-#     defaults while layering TAF-specific tuning on top.
+#     Apply TAF-managed PostgreSQL settings to the canonical config file
+#     provided by TAF (db_config_file). This file lives in tmp/ and is the
+#     ONLY config PostgreSQL should use. Initdb's postgresql.conf in data_dir
+#     is intentionally ignored.
 #
 # BEHAVIOR:
-#     - Always writes the port setting to ensure the configured port is used.
-#     - If a user config file is supplied and readable, appends its contents.
+#     - Always writes core runtime settings (port, listen, socket, pidfile).
+#     - Appends user-supplied config (db_config_file) while filtering out
+#       conflicting keys.
 #     - If no user config is supplied, writes safe benchmark defaults.
 ################################################################################
 sub _db_apply_postgresql_conf {
     my ($self) = @_;
     my $_tag = "$_me -> _db_apply_postgresql_conf ->";
 
-    my $pg_conf = File::Spec->catfile($self->{data_dir}, "postgresql.conf");
+    my $pg_conf = $self->{config};
 
-    unless (-w $pg_conf) {
-        PrintError("$_tag postgresql.conf not writable: $pg_conf");
+    unless ($pg_conf && -w $pg_conf) {
+        PrintError("$_tag TAF config file not writable: " . ($pg_conf // "<undef>"));
         return ERROR;
     }
 
-    my $socket_dir = $self->{tmpdir};
-    $socket_dir =~ s{/+$}{};
+    # Read existing user/TAF config
+    my @user_lines;
+    if (open(my $ufh, '<', $pg_conf)) {
+        @user_lines = <$ufh>;
+        close $ufh;
+    } else {
+        PrintError("$_tag Cannot read existing config: $pg_conf");
+        return ERROR;
+    }
 
-    if (open(my $fh, '>>', $pg_conf)) {
+    # Socket directory
+    my $socket_dir = $self->{socket};
+    $socket_dir =~ s{/[^/]+$}{};
 
-        print $fh "\n# === TAF-managed settings ===\n";
+    # Write merged config back to SAME file
+    if (open(my $fh, '>', $pg_conf)) {
 
-        # Core runtime settings
+        print $fh "# === TAF-managed settings ===\n";
         print $fh "port = $self->{port}\n";
         print $fh "listen_addresses = '*'\n";
         print $fh "unix_socket_directories = '$socket_dir'\n";
-
-        # Ensure PostgreSQL writes PID to runtime_dir, not data_dir
         print $fh "external_pid_file = '$self->{pidfile}'\n";
 
-        # SSL settings
         my $ssl_mode = lc($self->{ssl_mode} // 'off');
-        if ($ssl_mode ne 'off') {
-            print $fh "ssl = on\n";
-            print $fh "ssl_ca_file = '$self->{ssl_ca}'\n"     if $self->{ssl_ca};
-            print $fh "ssl_cert_file = '$self->{ssl_cert}'\n" if $self->{ssl_cert};
-            print $fh "ssl_key_file = '$self->{ssl_key}'\n"   if $self->{ssl_key};
-        } else {
-            print $fh "ssl = off\n";
-        }
+        print $fh ($ssl_mode ne 'off') ? "ssl = on\n" : "ssl = off\n";
 
-        # User-supplied config file
-        if ($self->{config} && -r $self->{config}) {
-            print $fh "\n# === User-supplied TAF config ===\n";
-            if (open(my $ufh, '<', $self->{config})) {
-                while (my $line = <$ufh>) {
-                    next if $line =~ /^\s*(port|listen_addresses|ssl|unix_socket_directories|external_pid_file)\s*=/i;
-                    print $fh $line;
-                }
-                close $ufh;
-                PrintVerbose("$_tag Appended user config: $self->{config}");
-            }
-        }
-        else {
-            # Safe benchmark defaults
-            print $fh "\n# === TAF benchmark defaults ===\n";
-            print $fh "shared_buffers = 256MB\n";
-            print $fh "work_mem = 4MB\n";
-            print $fh "maintenance_work_mem = 64MB\n";
-            print $fh "effective_cache_size = 1GB\n";
-            print $fh "checkpoint_completion_target = 0.9\n";
-            print $fh "wal_buffers = 16MB\n";
-            print $fh "max_connections = 500\n";
-            print $fh "log_min_duration_statement = -1\n";
-            print $fh "log_connections = off\n";
-            print $fh "log_disconnections = off\n";
-        }
+        print $fh "\n";
+        print $fh @user_lines;
 
         close $fh;
 
-    } 
-    else {
-        PrintError("$_tag Cannot open postgresql.conf for writing: $pg_conf");
+    } else {
+        PrintError("$_tag Cannot write merged config: $pg_conf");
         return ERROR;
     }
 
-    PrintVerbose("$_tag postgresql.conf configured");
+    PrintVerbose("$_tag PostgreSQL runtime config merged");
     return OK;
 }
+
+
 
 ################################################################################
 # _db_write_pg_hba_conf
@@ -1137,20 +1116,35 @@ sub _run_command {
     my ($self, $cmd_ref, $tag, $logfile) = @_;
     my $_tag = "${_me}::_run_command($tag): ";
 
-    my $cmd_str = join(' ', @$cmd_ref);
+    my @cmd = @$cmd_ref;
 
+    # Log the command
     if ($logfile) {
         if (open(my $fh, '>>', $logfile)) {
             print $fh "=== _run_command [$tag] ===\n";
-            print $fh "$cmd_str\n";
+            print $fh "@cmd\n";
             close $fh;
         }
-        $cmd_str .= " >> \"$logfile\" 2>&1";
     }
 
-    PrintVerbose("$_tag $cmd_str");
+    PrintVerbose("$_tag @cmd");
 
-    my $rc = system($cmd_str);
+    # Save real STDOUT/ERR file descriptors
+    open my $save_stdout, ">&", STDOUT or die "Cannot save STDOUT: $!";
+    open my $save_stderr, ">&", STDERR or die "Cannot save STDERR: $!";
+
+    # Redirect only for the child command
+    if ($logfile) {
+        open STDOUT, ">>", $logfile or die "Cannot redirect STDOUT: $!";
+        open STDERR, ">>", $logfile or die "Cannot redirect STDERR: $!";
+    }
+
+    # Execute command
+    my $rc = system(@cmd);
+
+    # Restore STDOUT/ERR
+    open STDOUT, ">&", $save_stdout or die "Cannot restore STDOUT: $!";
+    open STDERR, ">&", $save_stderr or die "Cannot restore STDERR: $!";
 
     if ($rc == -1) {
         PrintError("$_tag Failed to execute: $!");

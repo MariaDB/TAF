@@ -108,6 +108,8 @@ our @legalTests   = (@defaultTests);
 
 # tproch-specific options
 our %tsOpt = (
+    # CPU Binding
+    client_cpu_affinity => undef,
     # Hammerdb *.db in tmp
     always_recreate_hammerdb_state => undef,
     hammerdb_state_dir             => undef,
@@ -404,6 +406,9 @@ sub PreTestSetup {
     if(lc($tsOpt{db_type}) eq "mariadb"){
         $tsOpt{db_type} = "maria";
     }
+    
+    # Resolve HammerDB client CPU affinity
+    return ERROR if ResolveClientCpuAffinity($_pts) != OK;
 
     # Remove hammder db state db's in tmp from previous runs if the past metrics
     # and job id info is not needed to save space. 
@@ -1751,6 +1756,8 @@ sub GetTprochDriverKeys {
     }
     elsif ($db_type eq 'pg') {
         %map = (
+            'tpch pg_tpch_superuser'         => $options{db_root_user},
+            'tpch pg_tpch_superuserpass'     => $options{db_root_pass},
             'tpch pg_tpch_user'              => $options{db_user},
             'tpch pg_tpch_pass'              => $options{db_user_pass},
             'tpch pg_tpch_dbase'             => $options{db_name} // 'tproch',
@@ -1762,9 +1769,9 @@ sub GetTprochDriverKeys {
             'tpch pg_refresh_on'             => $tsOpt{refresh_on} // 0,
             'tpch pg_trickle_refresh'        => $tsOpt{trickle_refresh} // 1000,
             'tpch pg_refresh_verbose'        => $tsOpt{refresh_verbose} // 0,
-            'tpch pg_tspace'                 => $tsOpt{pg_tspace},
-            'tpch pg_gpcompat'               => $tsOpt{pg_gpcompat},
-            'tpch pg_gpcompress'             => $tsOpt{pg_gpcompress},
+            'tpch pg_tpch_tspace'            => $tsOpt{pg_tspace},
+            'tpch pg_tpch_gpcompat'          => $tsOpt{pg_gpcompat},
+            'tpch pg_tpch_gpcompress'        => $tsOpt{pg_gpcompress},
             'tpch pg_degree_of_parallel'     => $tsOpt{pg_degree_of_parallel},
             'tpch pg_rs_compat'              => $tsOpt{pg_rs_compat},
             'tpch pg_cloud_query'            => $tsOpt{pg_cloud_query},
@@ -3112,6 +3119,69 @@ sub ResetHammerdbState {
     StageEnd($_reset);
 }
 
+#-----------------------------------------------------------------------------
+# ResolveClientCpuAffinity
+#
+# PURPOSE:
+#     Parse and validate the hammerdb_tprocc.client_cpu_affinity option.
+#     Supports comma-separated integers and ranges (e.g. 0-11,12-19).
+#     Stores the expanded CPU list back into tsOpt{client_cpu_affinity}.
+#
+# CONTRACT:
+#     - client_cpu_affinity may contain integers or ranges.
+#     - Empty or undefined means "no affinity applied".
+#
+# INPUT:
+#     tsOpt{client_cpu_affinity}
+#
+# OUTPUT:
+#     tsOpt{client_cpu_affinity} = [ list of CPU IDs ]
+#
+# RETURNS:
+#     OK or ERROR
+#-----------------------------------------------------------------------------
+sub ResolveClientCpuAffinity {
+    my ($contextTag) = @_;
+
+    # Option is optional
+    unless (defined $tsOpt{client_cpu_affinity}) {
+        PrintVerbose($contextTag . " No client_cpu_affinity specified.");
+        return OK;
+    }
+
+    my $val = $tsOpt{client_cpu_affinity};
+
+    # Validate basic pattern: digits, ranges, commas
+    unless ($val =~ /^(\d+(-\d+)?)(,(\d+(-\d+)?))*$/) {
+        PrintError($contextTag . " Invalid client_cpu_affinity value: $val. "
+            . "Must be integers or ranges, comma-separated.");
+        return ERROR;
+    }
+
+    my @cpus;
+
+    # Expand ranges and single integers
+    for my $chunk (split(/,/, $val)) {
+        if ($chunk =~ /^(\d+)-(\d+)$/) {
+            my ($start, $end) = ($1, $2);
+
+            if ($end < $start) {
+                PrintError($contextTag . " Invalid range in client_cpu_affinity: $chunk.");
+                return ERROR;
+            }
+
+            push @cpus, ($start .. $end);
+        } else {
+            push @cpus, int($chunk);
+        }
+    }
+
+    # Store expanded list back into tsOpt
+    $tsOpt{client_cpu_affinity} = \@cpus;
+
+    PrintVerbose($contextTag . " client_cpu_affinity expanded to: " . join(",", @cpus));
+    return OK;
+}
 
 #############################################################################
 # Module terminator

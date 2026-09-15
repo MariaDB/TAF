@@ -275,6 +275,7 @@ sub DbGetVersion {
         next if $line =~ /^\s*$/;          # skip empty
         next if $line =~ /Warning/i;       # skip warnings
         next if $line =~ /VERSION\(\)/i;   # skip header
+        next if $line =~ /^\(\d+ rows?\)$/;   # skip "(1 row)"
         chomp $line;
         return $line;
     }
@@ -580,7 +581,7 @@ sub _BuildCommand {
         my $cmd = '';
         $cmd .= "PGPASSWORD='$pass' " if defined $pass;
         $cmd .= "$client -U $user";
-        # Always use TCP loopback — pg_hba.conf allows 127.0.0.1; db_socket is MySQL-style
+        # Always use TCP loopback ï¿½ pg_hba.conf allows 127.0.0.1; db_socket is MySQL-style
         my $pg_port = $opt->{db_port} // 5432;
         $cmd .= " -h 127.0.0.1 -p $pg_port";
         # Connect to maintenance database for DDL; -q suppresses notices

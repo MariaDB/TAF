@@ -453,6 +453,8 @@ our %options = (
     # Execute Script Files
     "exec_script_file_before_db_start" => undef, # Run script before db start
     "exec_script_file_after_db_start"  => undef, # Run script after db start
+    "exec_script_file_before_tests"    => undef, # Run script before tests start
+    "exec_script_file_after_tests"     => undef, # Run script after tests
     "exec_script_file_before_run_iter" => undef, # Run script before run
     "exec_script_file_after_run_iter"  => undef, # Run script after run start
 

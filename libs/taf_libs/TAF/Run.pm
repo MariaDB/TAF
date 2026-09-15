@@ -236,6 +236,20 @@ sub RunTests {
     PrintHeader("== STAGE: PRE TEST SETUP ==========================","=",71);
     PrintVerbose($rth."Calling test suite's main::PreTestSetup()");
     return ERROR if main::PreTestSetup($ctx) != OK;
+    
+    # pre-run script
+    if (defined $options->{exec_script_file_before_tests}
+        && $options->{exec_script_file_before_tests} ne "") {
+
+        my $script = $options->{exec_script_file_before_tests};
+        if (TAF::Utilities::ExecuteOsScript($ctx,
+                                            "before_tests",
+                                            $script,
+                                            $options->{tmp_dir}) != OK) {
+            PrintError($rth."Pre-tests script failed.");
+            return ERROR;
+        }
+    }
 
     # Test loop
     foreach my $test (@{$ctx->{tests}}) {
@@ -265,6 +279,20 @@ sub RunTests {
         return ERROR if MainTestCleanup($ctx)              != OK;
         return ERROR if TAF::Reports::GenerateReport($ctx) != OK;
         return ERROR if TAF::Archive::ArchiveResults($ctx,$test) != OK;
+    }
+
+    # after-run script
+    if (defined $options->{exec_script_file_after_tests}
+        && $options->{exec_script_file_after_tests} ne "") {
+
+        my $script = $options->{exec_script_file_after_tests};
+        if (TAF::Utilities::ExecuteOsScript($ctx,
+                                            "before_tests",
+                                            $script,
+                                            $options->{tmp_dir}) != OK) {
+            PrintError($rth."after-tests script failed.");
+            return ERROR;
+        }
     }
 
     # Suite-level cleanup

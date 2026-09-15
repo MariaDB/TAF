@@ -270,6 +270,8 @@ sub ParseCommandLineOptions {
         #-----------------------------------------------------------------------
         "exec-script-file-before-db-start:s" => \$tmp_ref->{exec_script_file_before_db_start},
         "exec-script-file-after-db-start:s"  => \$tmp_ref->{exec_script_file_after_db_start},
+        "exec-script-file-before-tests:s"    => \$tmp_ref->{exec_script_file_before_tests},
+        "exec-script-file-after-tests:s"     => \$tmp_ref->{exec_script_file_after_tests},
         "exec-script-file-before-run-iter:s" => \$tmp_ref->{exec_script_file_before_run_iter},
         "exec-script-file-after-run-iter:s"  => \$tmp_ref->{exec_script_file_after_run_iter},
 

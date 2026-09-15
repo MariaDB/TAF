@@ -251,6 +251,7 @@ our %tsOpt = (
     "bmk_update_range_size"          => undef,
     "cmake_args"                     => undef,
     "connector"                      => undef,
+    "client_cpu_affinity"            => undef,
     "db_driver"                      => undef,
     "db_ps_mode"                     => undef,
     "debug_full_sysbench"            => undef,
@@ -707,6 +708,10 @@ sub PreTestSetup{
         PrintVerbose($_pts."Use BMK detected. Calling setup for BMK");
         return ERROR if SetupBMK() != OK;
     }
+    
+    # Resolve client CPU affinity if set
+    return ERROR if ResolveClientCpuAffinity($_pts) != OK;
+    
     # Verify few options
     return ERROR if VerifyOptions() != OK;
     $tsState{pre_test_done} = TRUE;
@@ -2492,16 +2497,14 @@ sub IsBMKOnlyTest {
 #
 # Purpose:
 #   Execute a sysbench command using the specified executable, argument string,
-#   and output file. Handles directory switching, command construction,
-#   execution, and forced-shutdown fallback handling.
+#   and output file. Supports optional client CPU affinity via taskset.
 #
 # Behavior:
-#   - Constructs the full sysbench command line, redirecting stdout and stderr
-#     to the provided output file.
+#   - Prepends taskset -c <cpulist> when client_cpu_affinity is defined.
+#   - Constructs the full sysbench command line, redirecting stdout/stderr.
 #   - Changes to the configured source directory before execution.
 #   - Executes the command via system().
 #   - On non-OK return codes, delegates to CheckReturnCodeForFocedShutdown().
-#   - Returns the raw system() return code on success.
 #
 # Parameters:
 #   $exe_path     - Path to the sysbench executable.
@@ -2518,9 +2521,17 @@ sub Run {
 
     my $msg = $_me." -> Run -> ";
 
+    # Apply client CPU affinity if defined
+    if (defined $tsOpt{client_cpu_affinity}
+        && ref($tsOpt{client_cpu_affinity}) eq 'ARRAY') {
+
+        my $aff = join(",", @{$tsOpt{client_cpu_affinity}});
+        PrintVerbose($msg."Applying client CPU affinity via taskset: $aff");
+        $exe_path = "taskset -c $aff $exe_path";
+    }
+
     my $cmd = $exe_path." ".$cmd_args." > ".$output_file." 2>&1";
 
-    # Move to source directory
     PrintVerbose($msg."Changing directories to: ".$tsOpt{source});
     chdir($tsOpt{source});
 
@@ -3125,6 +3136,70 @@ sub NormalizeDBType {
     return "pgsql" if $t =~ /^(postgres|postgresql|pgsql)$/;
 
     return undef;
+}
+
+#-----------------------------------------------------------------------------
+# ResolveClientCpuAffinity
+#
+# PURPOSE:
+#     Parse and validate the hammerdb_tprocc.client_cpu_affinity option.
+#     Supports comma-separated integers and ranges (e.g. 0-11,12-19).
+#     Stores the expanded CPU list back into tsOpt{client_cpu_affinity}.
+#
+# CONTRACT:
+#     - client_cpu_affinity may contain integers or ranges.
+#     - Empty or undefined means "no affinity applied".
+#
+# INPUT:
+#     tsOpt{client_cpu_affinity}
+#
+# OUTPUT:
+#     tsOpt{client_cpu_affinity} = [ list of CPU IDs ]
+#
+# RETURNS:
+#     OK or ERROR
+#-----------------------------------------------------------------------------
+sub ResolveClientCpuAffinity {
+    my ($contextTag) = @_;
+
+    # Option is optional
+    unless (defined $tsOpt{client_cpu_affinity}) {
+        PrintVerbose($contextTag . " No client_cpu_affinity specified.");
+        return OK;
+    }
+
+    my $val = $tsOpt{client_cpu_affinity};
+
+    # Validate basic pattern: digits, ranges, commas
+    unless ($val =~ /^(\d+(-\d+)?)(,(\d+(-\d+)?))*$/) {
+        PrintError($contextTag . " Invalid client_cpu_affinity value: $val. "
+            . "Must be integers or ranges, comma-separated.");
+        return ERROR;
+    }
+
+    my @cpus;
+
+    # Expand ranges and single integers
+    for my $chunk (split(/,/, $val)) {
+        if ($chunk =~ /^(\d+)-(\d+)$/) {
+            my ($start, $end) = ($1, $2);
+
+            if ($end < $start) {
+                PrintError($contextTag . " Invalid range in client_cpu_affinity: $chunk.");
+                return ERROR;
+            }
+
+            push @cpus, ($start .. $end);
+        } else {
+            push @cpus, int($chunk);
+        }
+    }
+
+    # Store expanded list back into tsOpt
+    $tsOpt{client_cpu_affinity} = \@cpus;
+
+    PrintVerbose($contextTag . " client_cpu_affinity expanded to: " . join(",", @cpus));
+    return OK;
 }
 
 #############################################################################

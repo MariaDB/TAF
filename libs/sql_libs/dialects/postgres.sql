@@ -29,7 +29,8 @@
 #     - Do not modify block names without updating all references.
 # ======================================================================
 [version]
-SELECT version();
+SELECT 'PostgreSQL-' ||
+       regexp_replace(version(), '^PostgreSQL ([0-9]+\.[0-9]+).*$', '\1');
 
 [variables]
 SHOW ALL;

@@ -354,6 +354,7 @@ sub LoadAndBuildDBCFG {
 
         # Loader sets $DBCFG->{raw_lines}
         return ERROR unless _LoadDbConfigFromCfgFile($source_path) == OK;
+        
     }
     elsif ($origin eq "USER_PROPERTIES_INLINE_BLOCK") {
 
@@ -368,11 +369,18 @@ sub LoadAndBuildDBCFG {
 
         # Loader sets $DBCFG->{raw_lines}
         return ERROR unless _LoadDbConfigFromUserProperties($source_path) == OK;
+
     }
     else {
         PrintError(TAF_DBCH."LoadAndBuildDBCFG: Unknown config origin '$origin'");
         return ERROR;
     }
+
+    # SSL validation: FAIL if any SSL directive is present      
+    if (_ConfigContainsSSL($ctx) == ERROR) {
+        PrintError(TAF_DBCH."LoadAndBuildDBCFG: SSL directives found in config; refusing to continue, please use TAF properties for ssl");
+        return ERROR;
+    }     
 
     #---------------------------------------------------------------
     # Materialize tmp config file under taf.db_runtime_dir
@@ -620,16 +628,13 @@ sub _SetDbConfigRawLines {
 sub _LoadDbConfigFromUserProperties {
     my ($path) = @_;
 
-    # ALWAYS open fresh
     open(my $fh, "<", $path) or return ERROR;
 
-    my @props;
-    while (my $line = <$fh>) {
-        push @props, $line;
-    }
+    my @props = <$fh>;
     close($fh);
 
     my $in_block = 0;
+    my $saw_end  = 0;
     my @block;
 
     foreach my $line (@props) {
@@ -639,13 +644,16 @@ sub _LoadDbConfigFromUserProperties {
         }
         if ($line =~ /db_config_end/i) {
             $in_block = 0;
+            $saw_end  = 1;
             last;
         }
         push @block, $line if $in_block;
     }
 
-    unless (@block) {
-        PrintError(TAF_DBCH."LoadAndBuildDBCFG: Inline DB config block not found in '$path'");
+    # No block OR block never terminated properly
+    if (!@block || !$saw_end) {
+        PrintError(TAF_DBCH."_LoadDbConfigFromUserProperties: Inline DB config block incomplete or missing in '$path'");
+        PrintVerbose(TAF_DBCH."_LoadDbConfigFromUserProperties: eg. Could be missing [db_config_end]");
         return ERROR;
     }
 
@@ -773,6 +781,76 @@ sub _WriteTmpConfigFile {
 
     return OK;
 }
+
+#===============================================================================
+# _ConfigContainsSSL
+#
+# PURPOSE:
+#     Early-phase validator for detecting forbidden SSL-related directives in
+#     the database configuration file. Must be called immediately after the
+#     raw config is loaded and before the tmp config file is written or any
+#     database lifecycle operations begin.
+#
+# PARAMETERS:
+#     $ctx  - Framework context hashref containing:
+#                 { options => {}, dirs => {}, flags => {}, obj => {}, taf_var => {} }
+#             The database configuration file path is taken from:
+#                 $ctx->{options}->{db_config_file}
+#
+# BEHAVIOR:
+#     - Open the database configuration file for reading.
+#     - Ignore comment lines.
+#     - Perform case-insensitive keyword matching for forbidden SSL directives.
+#     - Return ERROR immediately when a forbidden directive is detected.
+#     - Return OK when no SSL directives are found.
+#
+# RETURNS:
+#     OK    - No SSL directives found.
+#     ERROR - Forbidden SSL directive detected or file could not be opened.
+#
+# NOTES:
+#     Caller is responsible for printing or handling any returned error and
+#     terminating early when required. This routine performs no logging or
+#     state mutation beyond optional verbose output.
+#===============================================================================
+#===============================================================================
+# _ConfigContainsSSL
+#===============================================================================
+sub _ConfigContainsSSL {
+    my ($ctx) = @_;
+
+    my @forbidden = qw(
+        ssl
+        ssl-ca
+        ssl-cert
+        ssl-key
+        ssl-crl
+        ssl-cipher
+        tls-version
+        tls-ciphersuites
+        require_secure_transport
+    );
+
+    my $lines = $DBCFG->{raw_lines} || [];
+
+    foreach my $line (@{$lines}) {
+        next if $line =~ /^\s*#/;
+        foreach my $kw (@forbidden) {
+            if ($line =~ /\b$kw\b/i) {
+
+                # TAF-native verbose output
+                PrintVerbose(TAF_DBCH."_ConfigContainsSSL: Forbidden SSL option '$kw' detected");
+
+                # Hard fail — caller must abort immediately
+                PrintError(TAF_DBCH."_ConfigContainsSSL: SSL directive '$kw' found in generated config");
+                return ERROR;
+            }
+        }
+    }
+
+    return OK;
+}
+
 
 #############################################################################
 # Module terminator

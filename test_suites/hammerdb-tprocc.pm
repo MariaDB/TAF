@@ -129,6 +129,7 @@ our %tsOpt = (
     # Executable and script paths
     client_executable     => undef,
     client_script_dir     => undef,
+    client_cpu_affinity   => undef,
     extra_args            => undef,
     test_client_version   => undef,
 
@@ -351,6 +352,9 @@ sub PreTestSetup {
  
     # Assign rampup from warmup_duration or fallback to default_rampup
     return ERROR if ResolveRampupDuration($_pts) != OK;
+    
+    # Resolve HammerDB client CPU affinity
+    return ERROR if ResolveClientCpuAffinity($_pts) != OK;
 
     # Warn if warmup_threads set (HammerDB handles warmup internally)
     if (defined $options{warmup_threads}) {
@@ -2816,12 +2820,14 @@ sub ResolveWarehouseCount {
 #
 # PURPOSE:
 #     Execute a hammerdbcli command line under bash and capture all output
-#     into a tailable file. This routine wraps system execution, redirects
-#     stdout and stderr, and maps the return code into framework constants.
+#     into a tailable file. Supports optional client CPU affinity by
+#     prepending taskset -c <cpulist> to the command line when configured.
 #
 # CONTRACT:
-#     - $cmdline must be a valid shell command suitable for hammerdbcli.
+#     - $cmd_line must be a valid shell command suitable for hammerdbcli.
 #     - $capture_path must be a writable file path.
+#     - If client_cpu_affinity is defined, the command is wrapped with
+#       taskset -c <cpulist> before execution.
 #     - All output from the command is redirected to $capture_path.
 #     - Returns OK if the command exits with rc 0, otherwise returns ERROR.
 #
@@ -2830,8 +2836,8 @@ sub ResolveWarehouseCount {
 #       output captured for later parsing and debugging.
 #
 # INPUT:
-#     $cmdline       Command line to execute.
-#     $capture_path  File path where output will be written.
+#     $cmd_line       Command line to execute.
+#     $capture_path   File path where output will be written.
 #
 # OUTPUT:
 #     - Writes command output to $capture_path.
@@ -2839,19 +2845,39 @@ sub ResolveWarehouseCount {
 #
 # SIDE EFFECTS:
 #     - Emits verbose messages describing the command being executed.
-#     - Emits error messages if the command fails.
+#     - Applies CPU affinity via taskset when configured.
 #     - Invokes StageStart and StageEnd for logging.
 #-----------------------------------------------------------------------------
 sub RunAndCapture {
-    my ($cmdline, $capture_path) = @_;
-    my $_rac = StageStart($_me." -> RunAndCapture ->");
+    my ($cmd_line, $capture_path) = @_;
+    my $_rac = StageStart($_me." -> RunAndCapture(TPROCH) ->");
 
+    # Make sure HAMMERDB_TPROCC_CONFIG is treated as an env assignment,
+    # not as the command name when taskset is prepended.
+    $cmd_line = "env $cmd_line";
+
+    # Optional CPU affinity for HammerDB client
+    if (defined $tsOpt{client_cpu_affinity}
+        && ref($tsOpt{client_cpu_affinity}) eq 'ARRAY'
+        && @{ $tsOpt{client_cpu_affinity}}) {
+
+        my $affinity_str = join(",", @{ $tsOpt{client_cpu_affinity}});
+        PrintVerbose($_rac . " Applying HammerDB CPU affinity: $affinity_str");
+
+        # Prepend taskset to the command line
+        $cmd_line = "taskset -c $affinity_str $cmd_line";
+    }
+
+    PrintVerbose($_rac." cmd ->: $cmd_line");
     PrintVerbose($_rac." Output ->: $capture_path");
-    my $shell_cmd = "bash -lc " . ShellQuote($cmdline);
+
+    my $shell_cmd = "bash -lc " . ShellQuote($cmd_line);
     my $final_cmd = "$shell_cmd > $capture_path 2>&1";
+
+    PrintVerbose($_rac." Running Command ->: $final_cmd");
+
     my $rc = system($final_cmd);
 
-    # Map to framework constants
     if ($rc == 0) {
         StageEnd($_rac);
         return OK;
@@ -2860,6 +2886,7 @@ sub RunAndCapture {
         return ERROR;
     }
 }
+
 
 #-----------------------------------------------------------------------------
 # RunChecksum
@@ -3961,6 +3988,70 @@ sub ResetHammerdbState {
 
     closedir($dh);
     StageEnd($_reset);
+}
+
+#-----------------------------------------------------------------------------
+# ResolveClientCpuAffinity
+#
+# PURPOSE:
+#     Parse and validate the hammerdb_tprocc.client_cpu_affinity option.
+#     Supports comma-separated integers and ranges (e.g. 0-11,12-19).
+#     Stores the expanded CPU list back into tsOpt{client_cpu_affinity}.
+#
+# CONTRACT:
+#     - client_cpu_affinity may contain integers or ranges.
+#     - Empty or undefined means "no affinity applied".
+#
+# INPUT:
+#     tsOpt{client_cpu_affinity}
+#
+# OUTPUT:
+#     tsOpt{client_cpu_affinity} = [ list of CPU IDs ]
+#
+# RETURNS:
+#     OK or ERROR
+#-----------------------------------------------------------------------------
+sub ResolveClientCpuAffinity {
+    my ($contextTag) = @_;
+
+    # Option is optional
+    unless (defined $tsOpt{client_cpu_affinity}) {
+        PrintVerbose($contextTag . " No client_cpu_affinity specified.");
+        return OK;
+    }
+
+    my $val = $tsOpt{client_cpu_affinity};
+
+    # Validate basic pattern: digits, ranges, commas
+    unless ($val =~ /^(\d+(-\d+)?)(,(\d+(-\d+)?))*$/) {
+        PrintError($contextTag . " Invalid client_cpu_affinity value: $val. "
+            . "Must be integers or ranges, comma-separated.");
+        return ERROR;
+    }
+
+    my @cpus;
+
+    # Expand ranges and single integers
+    for my $chunk (split(/,/, $val)) {
+        if ($chunk =~ /^(\d+)-(\d+)$/) {
+            my ($start, $end) = ($1, $2);
+
+            if ($end < $start) {
+                PrintError($contextTag . " Invalid range in client_cpu_affinity: $chunk.");
+                return ERROR;
+            }
+
+            push @cpus, ($start .. $end);
+        } else {
+            push @cpus, int($chunk);
+        }
+    }
+
+    # Store expanded list back into tsOpt
+    $tsOpt{client_cpu_affinity} = \@cpus;
+
+    PrintVerbose($contextTag . " client_cpu_affinity expanded to: " . join(",", @cpus));
+    return OK;
 }
 
 #############################################################################
