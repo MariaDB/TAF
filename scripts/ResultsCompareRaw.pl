@@ -3,8 +3,8 @@
 # ResultsCompareRaw.pl
 #
 # Created: 2025
-# Last Modified: July 2026
-# Version 2.0
+# Last Modified: September 2026
+# Version 4.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -87,7 +87,7 @@ GetOptions(
     "metric-name=s" => \$metric_name,
 );
 
-die "Usage: $0 file1.raw.txt file2.raw.txt ... output_dir [basename]\n"
+die "Usage: $0 --metric-name=s file1.raw.txt file2.raw.txt ... output_dir [basename]\n"
     if @ARGV < 3;
 
 my $basename = pop @ARGV;

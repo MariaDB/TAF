@@ -1623,33 +1623,6 @@ sub WriteReadmeStart {
        }
    }
 
-    # Test suite metadata
-    PrintVerbose("$wrass Calling test suite's main::GetReadmeMeta()");
-    my $meta = eval { main::GetReadmeMeta() };
-    if ($@ || !defined $meta || ref($meta) ne 'HASH') {
-        PrintError("WriteReadmeStart: Failed to retrieve test suite metadata");
-        return ERROR;
-    }
-
-    my $meta_width = List::Util::max(map { length($_) } keys %$meta);
-
-    foreach my $key (sort keys %$meta) {
-        my $label = ucfirst($key) . ":";
-        $ctx->{readme}->LogMessage(sprintf("%-*s %s", $meta_width+1, $label, $meta->{$key}));
-    }
-
-    # Append DB config block
-    if (TAF::DatabaseConfigurationHandler::WriteDbConfigMetaIntoReadme($ctx->{readme}) != OK) {
-        PrintError("WriteReadmeStart: Failed to write DB config into readme");
-        return ERROR;
-    }
-
-    # Append Generated Test Case Properties
-    if (TAF::Properties::PrintTestCaseUserPropertiesContentsToFile($ctx->{readme}) != OK) {
-        PrintError("WriteReadmeStart: Failed to write Test Case Properties into readme");
-        return ERROR;
-    }
-
     StageEnd($wrass);
     return OK;
 }
@@ -1698,11 +1671,40 @@ sub WriteReadmeEnd {
     my $writer = $ctx->{readme};
     my $date   = $ctx->{obj}{date};
 
-    PrintVerbose("$wreass Finishing up readme.txt");
+    PrintVerbose($wreass."Finishing up readme.txt");
 
     if (!$writer) {
-        PrintError("$wreass readme_writer not initialized");
+        PrintError($wreass."readme_writer not initialized");
         StageEnd($wreass);
+        return ERROR;
+    }
+
+   # Test suite metadata
+    PrintVerbose($wreass."Calling test suite's main::GetReadmeMeta()");
+    my $meta = eval { main::GetReadmeMeta() };
+    if ($@ || !defined $meta || ref($meta) ne 'HASH') {
+        PrintError("Failed to retrieve test suite metadata");
+        return ERROR;
+    }
+
+    my $meta_width = List::Util::max(map { length($_) } keys %$meta);
+
+    foreach my $key (sort keys %$meta) {
+        my $label = ucfirst($key) . ":";
+        $ctx->{readme}->LogMessage(sprintf("%-*s %s", $meta_width+1, $label, $meta->{$key}));
+    }
+
+    # Append DB config block
+    PrintVerbose($wreass."Writting database configuration into readme");
+    if (TAF::DatabaseConfigurationHandler::WriteDbConfigMetaIntoReadme($ctx->{readme}) != OK) {
+        PrintError("WriteReadmeEnd: Failed to write DB config into readme");
+        return ERROR;
+    }
+
+    # Append Generated Test Case Properties
+    PrintVerbose($wreass."Writting Test Case User Properties into readme");
+    if (TAF::Properties::PrintTestCaseUserPropertiesContentsToFile($ctx->{readme}) != OK) {
+        PrintError("WriteReadmeEnd: Failed to write Test Case Properties into readme");
         return ERROR;
     }
 
