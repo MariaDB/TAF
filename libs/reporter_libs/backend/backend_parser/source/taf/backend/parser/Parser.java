@@ -131,8 +131,24 @@ public class Parser {
         tr.clientProgram  = clientProgramFor(type);
         tr.clientVersion  = asString(meta.get("test_client_version"));
 
-        tr.configName     = asString(meta.get("db_config_file"));
-        tr.testTimestamp  = parseTimestamp(asString(meta.get("test_end_date_time")));
+        // ------------------------------------------------------------
+        // DB config 
+        // ------------------------------------------------------------
+        tr.configName         = asString(meta.get("db_config_origin"));
+        tr.dbConfigOrigin     = asString(meta.get("db_config_origin"));
+        tr.dbConfigSourceFile = asString(meta.get("db_config_source_file"));
+        tr.dbConfigTmpFile    = asString(meta.get("db_config_tmp_file"));
+
+        String rawConfig      = asString(meta.get("db_config_contents"));
+        tr.configJsonBlob     = canonicalizeDbConfig(rawConfig);
+
+        tr.testTimestamp      = parseTimestamp(asString(meta.get("test_end_date_time")));
+
+        // ------------------------------------------------------------
+        // Properties metadata
+        // ------------------------------------------------------------
+        tr.testRunProperties         = asString(meta.get("generated_properties_file"));
+        tr.testRunPropertiesContents = asString(meta.get("generated_properties_file_contents"));
 
         // ------------------------------------------------------------
         // Additional DB metadata
@@ -302,7 +318,7 @@ public class Parser {
     // 2) --threads=...
     // 3) metadata["threads"]
     private static String extractThreadList(Map<String,Object> meta) {
-        String cmd = asString(meta.get("taf_commandline"));
+        String cmd = asString(meta.get("taf_commandline_literal"));
         if (cmd != null) {
 
             int idx = cmd.indexOf("taf.threads=");
@@ -336,4 +352,27 @@ public class Parser {
             default: return "unknown";
         }
     }
+    
+    private static String canonicalizeDbConfig(String raw) {
+        if (raw == null || raw.isBlank()) return "{}";
+
+        Map<String, String> map = new LinkedHashMap<>();
+
+        // Split on pipes OR newlines
+        String[] entries = raw.split("[|\\n]");
+
+        for (String entry : entries) {
+            entry = entry.trim();
+            if (entry.isEmpty()) continue;
+
+            String[] kv = entry.split("=", 2);
+            String name  = kv[0].trim();
+            String value = kv.length > 1 ? kv[1].trim() : "";
+
+            map.put(name, value);
+        }
+
+        return JsonUtil.toJson(map);
+    }
+
 }

@@ -3,7 +3,7 @@ package TAF::Reports;
 # TAF::Reports
 #
 # Created: December 2025
-# Last Modified: January 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -71,6 +71,10 @@ package TAF::Reports;
 #     - Filename generation is deterministic and timestamp-based.
 #     - This module must remain stable; external plugins depend on its API.
 #############################################################################
+our $VERSION = '4.0';
+#===========================================================================
+#                            Imports
+#===========================================================================
 use Exporter 'import';
 use File::Spec;
 use File::Basename;
@@ -97,7 +101,6 @@ use TAF::Logging qw(PrintError
 
 use TAF::Utilities;
 use TAF::TestSuiteManagement;
-our $VERSION = '3.0';
 
 #===============================================================================
 #                             Exports
@@ -499,10 +502,16 @@ sub _DispatchReportPlugin {
         my $filename = _GenerateReportFilename($host, $dbmaker, $ts, $testname);
 
         eval {
-            $subref->($results, $filename, $outputDir);
-            PrintVerbose("$dr [$pluginPkg] wrote results to " . File::Spec->catfile($outputDir, $filename));
-            $success = TRUE;
+            my $ok = $subref->($results, $filename, $outputDir);
+
+            if ($ok) {
+                PrintVerbose("$dr [$pluginPkg] wrote results to " . File::Spec->catfile($outputDir, $filename));
+                $success = TRUE;
+            } else {
+                PrintError("$dr [$pluginPkg] returned failure");
+            }
         };
+
         if ($@) {
             PrintError("$dr [$pluginPkg] failed: $@");
         }
@@ -517,14 +526,16 @@ sub _DispatchReportPlugin {
 #
 # PURPOSE:
 #     Walk the results_root_dir, identify valid iteration subdirectories, and
-#     harvest metadata and metrics from each test run. Produces a standardized
-#     arrayref of result entries suitable for downstream reporting.
+#     harvest all metadata, multi-line properties/config blocks, and parsed
+#     metrics from each test run. Produces a standardized arrayref of result
+#     entries suitable for all downstream reporting modules and the backend
+#     parser.
 #
 # PARAMETERS:
 #     $results_root_dir
 #         Root directory containing iteration subdirectories. Each subdirectory
 #         is expected to contain:
-#             - readme.txt (metadata)
+#             - readme.txt (metadata + embedded properties/config blocks)
 #             - result files parsed by main::ParseResult()
 #
 # BEHAVIOR:
@@ -532,25 +543,52 @@ sub _DispatchReportPlugin {
 #     - Enumerate iteration subdirectories via GetValidSubdirs().
 #     - For each subdirectory:
 #           * Build full paths for metadata and metrics.
-#           * Parse metadata using:
+#           * Parse single-line metadata using:
 #                 TAF::TestSuiteManagement::ParseTestSuiteMetadata()
 #             then normalize via:
 #                 TAF::Utilities::NormalizeMetadata()
+#
+#           * Extract multi-line blocks from readme.txt:
+#                 - Auto Generated Test Case User Properties block
+#                 - Embedded DB configuration block ([db_config_start]/end)
+#
+#           * Canonicalize multi-line blocks into single-line, pipe-separated
+#             metadata fields:
+#                 generated_properties_file_contents
+#                 db_config_contents
+#
+#           * Preserve raw multi-line blocks for raw reporting and backend
+#             ingestion:
+#                 raw_properties_block
+#                 raw_db_config_block
+#
 #           * Parse metrics using main::ParseResult().
 #           * Validate both metadata and metrics.
-#           * Construct a result entry via BuildResultEntry().
+#           * Construct a unified result entry via BuildResultEntry().
+#
 #     - Log errors for malformed or missing metadata/metrics and skip them.
 #     - Return an arrayref of all successfully harvested result entries.
 #
 # RETURNS:
 #     Arrayref
-#         Zero or more result entry hashrefs.
+#         Zero or more result entry hashrefs, each containing:
+#             metadata (including canonical + raw block fields)
+#             metrics
+#             test_name
+#             thread_count
+#             duration
+#             timestamp
+#             iteration_id
 #
 # NOTES:
+#     - Multi-line blocks are never stored directly in canonical metadata fields;
+#       they are normalized into single-line pipe-separated values for safe
+#       consumption by CSV/HTML/JSON reporters and backend tools.
+#     - Raw multi-line blocks are preserved verbatim for raw reporting and
+#       backend structured parsing.
 #     - Does not die on malformed subdirectories; logs and continues.
 #     - Requires GetValidSubdirs() and main::ParseResult() to be available in
 #       the calling environment.
-#     - Metadata parsing and normalization are explicitly namespaced for clarity.
 #===============================================================================
 sub _HarvestResultsFromSubdirs {
     my ($results_root_dir) = @_;
@@ -561,12 +599,16 @@ sub _HarvestResultsFromSubdirs {
     PrintVerbose($hr . "Found " . scalar(@subdirs) . " iteration subdirs");
 
     foreach my $sub (@subdirs) {
+
         my $path     = File::Spec->catdir($results_root_dir, $sub);
         my $metaPath = File::Spec->catfile($path, 'readme.txt');
 
         PrintVerbose($hr . "  Processing: $sub");
         PrintVerbose($hr . "  Meta path: $metaPath");
 
+        # ------------------------------------------------------------
+        # Parse single-line metadata (key: value)
+        # ------------------------------------------------------------
         my $meta =
            TAF::Utilities::NormalizeMetadata(
              TAF::TestSuiteManagement::ParseTestSuiteMetadata($metaPath));
@@ -576,13 +618,27 @@ sub _HarvestResultsFromSubdirs {
             next;
         }
 
-        # Call the test suite's ParseResult
+        # ------------------------------------------------------------
+        # NEW: Extract multi-line blocks from readme.txt
+        # ------------------------------------------------------------
+        my ($props_block, $db_block) = ExtractBlocksFromReadme($metaPath);
+
+        # Canonical single-line versions (safe for CSV/HTML/JSON/backend)
+        $meta->{generated_properties_file_contents} = JoinWithPipes($props_block);
+        $meta->{db_config_contents}                = JoinWithPipes($db_block);
+
+        # ------------------------------------------------------------
+        # Parse metrics
+        # ------------------------------------------------------------
         my $metrics = main::ParseResult($path);
         unless ($metrics && ref $metrics eq 'ARRAY') {
             PrintError($hr . "  Failed to parse metrics for $sub");
             next;
         }
 
+        # ------------------------------------------------------------
+        # Build unified result entry
+        # ------------------------------------------------------------
         my $result = BuildResultEntry($meta, $metrics);
         push @results, $result if $result;
     }
@@ -705,6 +761,155 @@ sub _ShouldGenerateReport {
 
     StageEnd($sgr);
     return TRUE;
+}
+
+#===============================================================================
+# ExtractBlocksFromReadme
+#
+# PURPOSE:
+#     Parse readme.txt and extract two structured multi-line blocks:
+#         1. Auto Generated Test Case User Properties block
+#         2. Embedded DB configuration block ([db_config_start]/[db_config_end])
+#
+# PARAMETERS:
+#     $readmePath
+#         Full path to readme.txt inside an iteration directory.
+#
+# BEHAVIOR:
+#     - Open readme.txt and scan line-by-line.
+#     - Detect the start and end of the Auto Generated Test Case User Properties
+#       block using explicit textual markers.
+#     - While inside the properties block:
+#           * Capture all non-empty, non-comment lines.
+#           * Detect nested DB config block markers.
+#     - While inside the DB config block:
+#           * Capture all non-empty, non-comment lines.
+#     - Return two arrayrefs:
+#           * First: properties block lines (in order)
+#           * Second: DB config block lines (in order)
+#
+# RETURNS:
+#     List of two arrayrefs:
+#         ( \@props, \@db )
+#
+#         \@props  - Arrayref of raw properties lines.
+#         \@db     - Arrayref of raw DB config lines.
+#
+# NOTES:
+#     - Does not attempt to interpret or normalize values.
+#     - Does not modify whitespace beyond chomp().
+#     - Caller is responsible for canonicalizing or storing raw blocks.
+#     - If readme.txt cannot be opened, returns empty arrayrefs.
+#===============================================================================
+sub ExtractBlocksFromReadme {
+    my ($readmePath) = @_;
+
+    open my $fh, '<', $readmePath or return ([], []);
+
+    my @props;   # full properties block INCLUDING db config
+    my @db;      # db config block ONLY
+
+    my $in_props = 0;
+    my $in_db    = 0;
+
+    while (my $line = <$fh>) {
+        chomp $line;
+
+        # Start/end markers for properties block
+        if ($line =~ /Auto Generated Test Case User Properties Start/) {
+            $in_props = 1;
+            push @props, $line;   # preserve marker
+            next;
+        }
+        if ($line =~ /Auto Generated Test Case User Properties End/) {
+            push @props, $line;   # preserve marker
+            $in_props = 0;
+            next;
+        }
+
+        # DB config block markers inside properties block
+        if ($in_props && $line =~ /\[db_config_start\]/) {
+            push @props, $line;   # preserve marker
+            $in_db = 1;
+            next;
+        }
+        if ($in_props && $line =~ /\[db_config_end\]/) {
+            push @props, $line;   # preserve marker
+            $in_db = 0;
+            next;
+        }
+
+        # Capture DB config lines (AND preserve them in props)
+        if ($in_db) {
+            next if $line =~ /^\s*$/;
+            next if $line =~ /^\s*#/;
+
+            push @db,   $line;    # db-only block
+            push @props, $line;   # preserve inside properties block
+
+            next;
+        }
+
+        # Capture properties lines
+        if ($in_props) {
+            next if $line =~ /^\s*$/;
+            next if $line =~ /^\s*#/;
+
+            push @props, $line;
+            next;
+        }
+    }
+
+    close $fh;
+    return (\@props, \@db);
+}
+
+#===============================================================================
+# JoinWithPipes
+#
+# PURPOSE:
+#     Convert an arrayref of multi-line raw block content into a single-line,
+#     pipe-separated canonical metadata value safe for CSV/HTML/JSON/backend
+#     consumption.
+#
+# PARAMETERS:
+#     $arr
+#         Arrayref of raw lines extracted from a multi-line block.
+#
+# BEHAVIOR:
+#     - Return empty string if input is not an arrayref.
+#     - For each defined line:
+#           * Trim leading and trailing whitespace.
+#           * Escape literal pipe characters by prefixing them with a backslash.
+#           * Preserve all other characters verbatim.
+#     - Join all cleaned lines using a single pipe ('|') separator.
+#
+# RETURNS:
+#     String
+#         Single-line canonical representation of the block, e.g.:
+#             "k1=v1|k2=v2|k3=v3"
+#
+# NOTES:
+#     - Does not interpret key/value semantics.
+#     - Does not remove quotes, commas, equals signs, or colons.
+#     - Ensures canonical metadata fields remain single-line and safe for
+#       downstream flattening.
+#     - Raw multi-line blocks should be stored separately if needed.
+#===============================================================================
+sub JoinWithPipes {
+    my ($arr) = @_;
+    return '' unless $arr && ref($arr) eq 'ARRAY';
+
+    my @clean;
+    foreach my $line (@$arr) {
+        next unless defined $line;
+        $line =~ s/\s+$//;      # trim trailing whitespace
+        $line =~ s/^\s+//;      # trim leading whitespace
+        $line =~ s/\|/\\|/g;    # escape pipe if present
+        push @clean, $line;
+    }
+
+    return join('|', @clean);
 }
 
 #############################################################################

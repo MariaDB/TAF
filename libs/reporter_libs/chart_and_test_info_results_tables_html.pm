@@ -1,9 +1,9 @@
 package reporter_libs::chart_and_test_info_results_tables_html;
 #############################################################################
 # reporter_libs::chart_and_test_info_results_tables_html
-#
+
 # Created: December 2025
-# Last Modified: January 2026
+# Last Modified: August 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -30,8 +30,9 @@ package reporter_libs::chart_and_test_info_results_tables_html;
 #         - Per-thread statistical summary tables
 #         - Iteration-level value tables
 #         - System metadata tables (per dataset)
-#         - Database metadata tables (per dataset)
-#         - Test configuration metadata tables (per dataset)
+#         - Database metadata tables (per dataset, including DB config origin)
+#         - Test configuration metadata tables (per dataset, including
+#           canonical properties and DB config contents)
 #
 # ARCHITECTURAL ROLE:
 #     - Implements the GenerateResults() interface required by TAF::Reports.
@@ -42,8 +43,8 @@ package reporter_libs::chart_and_test_info_results_tables_html;
 #       skewness, kurtosis) for each user/thread combination.
 #     - Renders contributor-proof metadata tables for host, database, and test
 #       configuration fields.
-#     - Produces deterministic, diff-friendly HTML output using only the
-#       Chart.js CDN as an external dependency.
+#     - Consumes ONLY metadata embedded in result entries; does not resolve
+#       DB config files from disk or infer DB config from commandline.
 #
 # WHAT THIS MODULE DOES NOT DO:
 #     - Does not validate semantic correctness of metrics or metadata.
@@ -74,14 +75,6 @@ package reporter_libs::chart_and_test_info_results_tables_html;
 #     - Chart.js is loaded from CDN for portability.
 #     - HTML is self-contained and requires no TAF assets at runtime.
 #     - Diff column appears only when exactly two datasets exist.
-#
-# NOTES:
-#     - This reporter is intended for workloads where the primary metric varies
-#       by thread count and where full metadata disclosure is required.
-#     - Any change to metric structure or metadata expectations must be
-#       reflected here and in the TAF documentation.
-#     - All statistical computations are performed directly on numeric values
-#       extracted from the metrics array.
 #############################################################################
 
 use strict;
@@ -93,7 +86,6 @@ use lib "$FindBin::Bin/..";
 use Exporter 'import';
 use File::Spec;
 use List::Util qw(sum min max);
-use reporter_libs::_taf_paths qw(taf_root resolve_config_path);
 
 our @EXPORT_OK = qw(GenerateResults);
 
@@ -205,23 +197,19 @@ sub kurtosis {
     return ($sum / $n) / ($std**4);
 }
 
+
 #############################################################################
 # parse_config_kv
 #
 # PURPOSE:
-#     Parse MariaDB config file contents into a normalized key=value hash.
-#
-# GUARANTEES:
-#     - Keys are lowercased.
-#     - Comments and blank lines are ignored.
-#     - Returns hashref.
+#     Parse canonical DB config contents (pipe or newline separated) into
+#     a normalized key=value hash.
 #############################################################################
 sub parse_config_kv {
     my ($text) = @_;
     my %kv;
 
     for my $line (split /\n/, $text) {
-        next if $line =~ /^\s*#/;
         next if $line =~ /^\s*$/;
 
         # Case 1: key=value
@@ -231,10 +219,22 @@ sub parse_config_kv {
             next;
         }
 
-        # Case 2: bare directive (boolean flag)
-        if ($line =~ /^\s*([A-Za-z0-9_]+)\s*$/) {
+        # Case 2: pipe-separated canonical block: k1=v1|k2=v2|...
+        if ($line =~ /\|/) {
+            for my $pair (split /\|/, $line) {
+                next if $pair =~ /^\s*$/;
+                if ($pair =~ /^\s*([^=]+?)\s*=\s*(.*?)\s*$/) {
+                    my ($k,$v) = (lc $1, $2);
+                    $kv{$k} = $v;
+                }
+            }
+            next;
+        }
+
+        # Case 3: bare directive (boolean flag)
+        if ($line =~ /^\s*([A-Za-z0-9_\-]+)\s*$/) {
             my $k = lc $1;
-            $kv{$k} = '__FLAG__';   # placeholder value
+            $kv{$k} = '__FLAG__';
             next;
         }
     }
@@ -369,38 +369,25 @@ sub GenerateResults {
         $host_meta_by_user{$user}{core_count}   ||= $meta->{core_count};
         $host_meta_by_user{$user}{socket_count} ||= $meta->{socket_count};
         $host_meta_by_user{$user}{os}           ||= $meta->{os};
+        $host_meta_by_user{$user}{os_version}   ||= $meta->{os_version};
+        $host_meta_by_user{$user}{os_kernel}    ||= $meta->{os_kernel};
         $host_meta_by_user{$user}{ram}          ||= $meta->{ram};
-        $host_meta_by_user{$user}{disk}         ||= $meta->{disk};
 
        #------------------------------
        # Database metadata
        #------------------------------
-       my $cmd = $meta->{taf_commandline} // '';
-       
-       # Split literal command line from merged properties
-       my ($literal, $props) = split /:: prop file contents ->/, $cmd, 2;
-       
-       my $dbconfig;
-       
-       # 1. Command line override (highest precedence)
-       if (defined $literal && $literal =~ /--db-config-file=([^ ]+)/) {
-           $dbconfig = $1;
-       
-       # 2. User properties (second precedence)
-       } elsif (defined $props && $props =~ /\btaf\.db_config_file=([^ ]+)/) {
-           $dbconfig = $1;
-       
-       # 3. Metadata fallback
-       } else {
-           $dbconfig = $meta->{db_config_file} // 'unknown';
-       }
-
-        $db_meta_by_user{$user}{dbmaker}   ||= $meta->{database_maker};
-        $db_meta_by_user{$user}{dbversion} ||= $meta->{database_version};
-        $db_meta_by_user{$user}{dbeng}     ||= $meta->{database_eng};
-        $db_meta_by_user{$user}{dbdir}     ||= $meta->{db_install_dir};
-        $db_meta_by_user{$user}{dbconfig}  ||= $meta->{db_config_file}
-                                             || $dbconfig;
+        $db_meta_by_user{$user}{dbmaker}            ||= $meta->{database_maker};
+        $db_meta_by_user{$user}{dbversion}          ||= $meta->{database_version};
+        $db_meta_by_user{$user}{dbeng}              ||= $meta->{database_eng};
+        $db_meta_by_user{$user}{dbdir}              ||= $meta->{db_install_dir};
+        $db_meta_by_user{$user}{dbconfig_origin}    ||= $meta->{db_config_origin};
+        $db_meta_by_user{$user}{dbconfig_source}    ||= $meta->{db_config_source_file};
+        $db_meta_by_user{$user}{db_config_run_file} ||= $meta->{db_config_run_file};
+        $db_meta_by_user{$user}{dbconfig}           ||= $meta->{db_config_source_file}
+                                                    || $meta->{db_config_file}
+                                                    || 'unknown';
+        $db_meta_by_user{$user}{config_contents}    ||= $meta->{db_config_contents}
+                                                    || '';
 
         #------------------------------
         # Test metadata
@@ -408,15 +395,30 @@ sub GenerateResults {
         my $suite_raw = $meta->{test_suite} // '';
         (my $suite_prefix = $suite_raw) =~ s/-/_/g;
 
-        $test_meta_by_user{$user}{suite}     ||= $suite_raw;
-        $test_meta_by_user{$user}{testname}  ||= $meta->{test_name};
-        $test_meta_by_user{$user}{duration}  ||= $meta->{duration};
-        $test_meta_by_user{$user}{timestamp} ||= $meta->{timestamp};
+        $test_meta_by_user{$user}{suite}         ||= $suite_raw;
+        $test_meta_by_user{$user}{testname}      ||= $meta->{test_name};
+        $test_meta_by_user{$user}{test_case_tag} ||= $meta->{test_case_tag};
+        $test_meta_by_user{$user}{duration}      ||= $meta->{duration};
+        $test_meta_by_user{$user}{timestamp}     ||= $meta->{timestamp};
+        $test_meta_by_user{$user}{iterations}    ||= 0;
 
-        # Track iterations
+        $test_meta_by_user{$user}{generated_properties_file}
+            ||= $meta->{generated_properties_file};
+        $test_meta_by_user{$user}{generated_properties_file_contents}
+            ||= $meta->{generated_properties_file_contents};
+
+        $test_meta_by_user{$user}{db_config_origin}
+            ||= $meta->{db_config_origin};
+        $test_meta_by_user{$user}{db_config_source_file}
+            ||= $meta->{db_config_source_file};
+        $test_meta_by_user{$user}{db_config_tmp_file}
+            ||= $meta->{db_config_tmp_file};
+        $test_meta_by_user{$user}{db_config_contents}
+            ||= $meta->{db_config_contents};
+
         $test_meta_by_user{$user}{_iter_seen}{$iter} = 1 if $iter;
 
-        # Extract suite-specific settings
+        my $cmd = $meta->{taf_commandline} // '';
         while ($cmd =~ /\b\Q$suite_prefix\E\.([A-Za-z0-9_]+)=([^ ]+)/g) {
             $test_meta_by_user{$user}{$1} = $2;
         }
@@ -429,46 +431,27 @@ sub GenerateResults {
         #------------------------------
         # Dataset label
         #------------------------------
-        my $maker   = $meta->{database_maker};
-        my $version = $meta->{database_version};
+        my $maker   = $meta->{database_maker} // '';
+        my $version = $meta->{database_version} // '';
 
-        if (defined $maker && defined $version && $maker ne '' && $version ne '') {
-            $labels_by_user{$user} = ucfirst($maker) . " $version";
+        if ($version ne '' && $maker ne '') {
+        
+            # If version already contains maker (case-insensitive), use version only
+            if ($version =~ /\Q$maker\E/i) {
+                $labels_by_user{$user} = $version;
+            }
+            else {
+                $labels_by_user{$user} = ucfirst($maker) . " $version";
+            }
+        
         }
-        elsif (defined $maker && $maker ne '') {
+        elsif ($maker ne '') {
             $labels_by_user{$user} = ucfirst($maker);
         }
         else {
             $labels_by_user{$user} = $meta->{test_host} // $user;
         }
-    }
 
-    #-------------------------------------------------------------------------
-    # TAF BLOCK: Resolve Config Files
-    #
-    # PURPOSE:
-    #     Resolve and read database config files per dataset.
-    #
-    # GUARANTEES:
-    #     - Missing or unreadable files produce a safe placeholder.
-    #-------------------------------------------------------------------------
-    foreach my $user (keys %db_meta_by_user) {
-
-        my $cfg = $db_meta_by_user{$user}{dbconfig} || 'unknown';
-        my $resolved = resolve_config_path($cfg);
-
-        my $contents = '';
-        if ($cfg ne 'unknown' && defined $resolved && -f $resolved) {
-            open my $cfh, '<', $resolved;
-            local $/;
-            $contents = <$cfh>;
-            close $cfh;
-        } else {
-            $contents = "[config file not found or inaccessible]";
-        }
-
-        $db_meta_by_user{$user}{dbconfig}        = $cfg;
-        $db_meta_by_user{$user}{config_contents} = $contents;
     }
 
     #-------------------------------------------------------------------------
@@ -483,17 +466,6 @@ sub GenerateResults {
         my $iterations = @iters ? $iters[-1] : 0;
         $test_meta_by_user{$user}{iterations} = $iterations;
     }
-
-    #-------------------------------------------------------------------------
-    # TAF BLOCK: Sanitize Test Name and Build Output Path
-    #
-    # PURPOSE:
-    #     Ensure filesystem-safe output filename.
-    #-------------------------------------------------------------------------
-    (my $safe_testname = $testname) =~ s/[^A-Za-z0-9_.-]+/_/g;
-
-    my $output_file = $safe_testname . "_" . $ts . ".chartplus_testinfo.html";
-    my $output_path = File::Spec->catfile($outputDir, $output_file);
 
     #-------------------------------------------------------------------------
     # TAF BLOCK: Compute Per-User Averages
@@ -546,6 +518,10 @@ JS
 
     my $datasets_js = "[\n" . join(",\n", @datasets_js) . "\n]";
     my $chart_type = (@thread_counts > 1) ? 'line' : 'bar';
+
+    (my $safe_testname = $testname) =~ s/[^A-Za-z0-9_.-]+/_/g;
+    my $output_file = $safe_testname . "_" . $ts . ".chartplus_testinfo.html";
+    my $output_path = File::Spec->catfile($outputDir, $output_file);
 
     my $chart_title    = "$testname";
     my $chart_subtitle = $comment;
@@ -605,9 +581,9 @@ JS
     th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: left; }
     th { background: #eee; }
     h3 { text-align: center; margin-top: 10px; }
-.results-grid { display: block; margin: 40px auto; max-width: 900px;}
-.result-box {margin-bottom: 40px; padding: 10px; border: 1px solid #ccc; background: #f9f9f9;}
-</style>
+    .results-grid { display: block; margin: 40px auto; max-width: 900px;}
+    .result-box {margin-bottom: 40px; padding: 10px; border: 1px solid #ccc; background: #f9f9f9;}
+  </style>
 </head>
 <body>
   <h2 style="text-align:center;">$chart_title</h2>
@@ -650,30 +626,27 @@ HTML
     #     - Always rendered if at least one dataset exists.  
     #     - Metric name is derived from $primary_name.  
     #-------------------------------------------------------------------------  
-    if (@users >= 1) {
-    
+    my @users_local = @users;
+    if (@users_local >= 1) {
         print $fh "<div class=\"tps-delta-container\">\n";
         print $fh "<h2>Comparison: $primary_name</h2>\n";
         print $fh "<table class=\"delta-table\">\n";
         print $fh "<thead><tr><th>Threads</th>";
-    
-        for my $user (@users) {
+
+        for my $user (@users_local) {
             print $fh "<th>$labels_by_user{$user}</th>";
         }
-    
+
         print $fh "</tr></thead>\n<tbody>\n";
-    
+
         for my $tc (@thread_counts) {
             print $fh "<tr><td>$tc</td>";
-    
-            for my $user (@users) {
+            for my $user (@users_local) {
                 my $val = $avg_by_user{$user}{$tc} // 0;
                 printf $fh "<td>%.3f</td>", $val;
             }
-    
             print $fh "</tr>\n";
         }
-    
         print $fh "</tbody></table>\n";
         print $fh "</div>\n";
     }
@@ -692,7 +665,17 @@ HTML
     }
     print $fh "</tr>\n";
 
-    my @sys_keys = qw(host cpu cpu_count core_count socket_count os ram disk);
+    my @sys_keys = qw(
+        host
+        cpu
+        cpu_count
+        core_count
+        socket_count
+        os
+        os_version
+        os_kernel
+        ram);
+
     my %sys_labels = (
         host         => 'Host',
         cpu          => 'CPU',
@@ -700,9 +683,10 @@ HTML
         core_count   => 'Core Count',
         socket_count => 'Socket Count',
         os           => 'OS',
-        ram          => 'RAM',
-        disk         => 'Disk',
-    );
+        os_version   => 'OS Version',
+        os_kernel    => 'OS Kernel',
+        ram          => 'RAM'
+        );
 
     # Baseline is first dataset
     my $sys_baseline = $users[0];
@@ -745,13 +729,24 @@ HTML
     }
     print $fh "</tr>\n";
 
-    my @db_keys = qw(dbmaker dbversion dbeng dbdir dbconfig);
+    my @db_keys = qw(
+        dbmaker
+        dbversion
+        dbeng
+        dbdir
+        dbconfig_origin
+        dbconfig_source
+        db_config_run_file
+    );
+
     my %db_labels = (
-        dbmaker   => 'Database Maker',
-        dbversion => 'Database Version',
-        dbeng     => 'Engine',
-        dbdir     => 'Install Dir',
-        dbconfig  => 'Config File',
+        dbmaker            => 'Database Maker',
+        dbversion          => 'Database Version',
+        dbeng              => 'Engine',
+        dbdir              => 'Install Dir',
+        dbconfig_origin    => 'DB Config Origin',
+        dbconfig_source    => 'DB Config Source File',
+        db_config_run_file => 'DB Generated Config Run File',
     );
 
     # Baseline is first dataset
@@ -760,19 +755,33 @@ HTML
     foreach my $key (@db_keys) {
         print $fh "<tr><td>$db_labels{$key}</td>";
 
-        my $base_val = $db_meta_by_user{$db_baseline}{$key} // 'unknown';
+        my $base_val = $db_meta_by_user{$db_baseline}{$key};
+        my $base_disp;
+    
+        if (!defined $base_val || $base_val eq '') {
+            $base_disp = "(missing)";
+        } else {
+            $base_disp = ($base_val =~ m{([^/]+)$}) ? $1 : $base_val;
+        }
 
         for my $user (@users) {
-            my $val = $db_meta_by_user{$user}{$key} // 'unknown';
+            my $val = $db_meta_by_user{$user}{$key};
+            my $disp;
+    
+            if (!defined $val || $val eq '') {
+                $disp = "(missing)";
+            } else {
+                $disp = ($val =~ m{([^/]+)$}) ? $1 : $val;
+            }
 
             if ($user eq $db_baseline) {
-                print $fh "<td>$val</td>";
+                print $fh "<td>$disp</td>";
             }
-            elsif ($val ne $base_val) {
-                print $fh "<td><b>$val</b></td>";
+            elsif ($disp ne $base_disp) {
+                print $fh "<td><b>$disp</b></td>";
             }
             else {
-                print $fh "<td>$val</td>";
+                print $fh "<td>$disp</td>";
             }
         }
 
@@ -783,16 +792,20 @@ HTML
 
     # Baseline is first dataset
     my $cfg_baseline = $users[0];
-    my $base_raw = $db_meta_by_user{$cfg_baseline}{config_contents} // '';
-    my %base_kv = %{ parse_config_kv($base_raw) };
+    my $base_raw     = $db_meta_by_user{$cfg_baseline}{config_contents} // '';
+    $base_raw =~ s/\|/\n/g;
 
+    my %base_kv = %{ parse_config_kv($base_raw) };
     # Preserve baseline order
     my @cfg_ordered_keys = keys %base_kv;
 
     # Add keys that appear only in other datasets
     for my $user (@users) {
         my $raw = $db_meta_by_user{$user}{config_contents} // '';
+        $raw =~ s/\|/\n/g;
+    
         my %kv = %{ parse_config_kv($raw) };
+    
         for my $k (keys %kv) {
             push @cfg_ordered_keys, $k unless grep { $_ eq $k } @cfg_ordered_keys;
         }
@@ -801,6 +814,8 @@ HTML
     for my $user (@users) {
 
         my $raw = $db_meta_by_user{$user}{config_contents} // '';
+        $raw =~ s/\|/\n/g;
+    
         my %kv = %{ parse_config_kv($raw) };
 
         my @out;
@@ -885,12 +900,25 @@ HTML
     for my $user (@users) {
         for my $k (keys %{ $test_meta_by_user{$user} }) {
             next if $k eq '_iter_seen';
+            next if $k eq 'generated_properties_file_contents';
+            next if $k eq 'db_config_origin';
+            next if $k eq 'db_config_source_file';
+            next if $k eq 'db_config_tmp_file';
+            next if $k eq 'db_config_contents';
             $all_test_keys{$k} = 1;
         }
     }
+    
+    my @base_order = qw(
+        suite
+        testname
+        test_case_tag
+        duration
+        iterations
+        timestamp
+        generated_properties_file
+    );
 
-    # Base ordering for readability
-    my @base_order = qw(suite testname duration iterations timestamp);
     my %is_base = map { $_ => 1 } @base_order;
 
     # Suite-specific settings (everything not in base order)
@@ -898,17 +926,18 @@ HTML
 
     # Final ordered list of keys
     my @ordered_keys;
-    push @ordered_keys, grep { $all_test_keys{$_} } qw(suite testname duration iterations);
+    push @ordered_keys, grep { $all_test_keys{$_} } @base_order;
     push @ordered_keys, @suite_keys;
-    push @ordered_keys, 'timestamp' if $all_test_keys{timestamp};
-
+    
     # Human-readable labels
     my %label_overrides = (
-        suite      => 'Test Suite',
-        testname   => 'Test Name',
-        duration   => 'Duration',
-        iterations => 'Iterations',
-        timestamp  => 'Timestamp',
+        suite                     => 'Test Suite',
+        testname                  => 'Test Name',
+        test_case_tag             => 'Test Case Tag',
+        duration                  => 'Duration',
+        iterations                => 'Iterations',
+        timestamp                 => 'Timestamp',
+        generated_properties_file => 'AutoGen Prop File',
     );
 
     # Emit rows
@@ -922,12 +951,19 @@ HTML
         }
 
         print $fh "<tr><td>$label</td>";
-
+    
         for my $user (@users) {
-            my $val = $test_meta_by_user{$user}{$key};
-            $val = 'unknown' unless defined $val && $val ne '';
-            print $fh "<td>$val</td>";
-        }
+           my $val = $test_meta_by_user{$user}{$key};
+           $val = 'unknown' unless defined $val && $val ne '';
+       
+           if ($key eq 'generated_properties_file') {
+               if ($val ne 'unknown') {
+                   $val =~ s{.*/}{};
+               }
+           }
+
+           print $fh "<td>$val</td>";
+    }
 
         print $fh "</tr>\n";
     }
@@ -1083,7 +1119,7 @@ HTML
         print $fh "</div>\n";  # result-box
     }
 
-
+    print $fh "</div>\n";
     #-------------------------------------------------------------------------
     # TAF BLOCK: Finalization
     #

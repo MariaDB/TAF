@@ -3,9 +3,9 @@ package mysql;
 # mysql.pm - MySQL Database Plugin for TAF
 #
 # Created:       December 2025
-# Last Modified: July 2026
+# Last Modified: September 2026
 #
-# Version: 3.1
+# Version: 4.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -2981,11 +2981,11 @@ sub _compute_server_ssl_flags {
     # SSL ON (any mode)
     my @flags;
 
-    push @flags, "--ssl-ca=\"$self->{ssl_ca}\""       if $self->{ssl_ca};
-    push @flags, "--ssl-cert=\"$self->{ssl_cert}\""   if $self->{ssl_cert};
-    push @flags, "--ssl-key=\"$self->{ssl_key}\""     if $self->{ssl_key};
-    push @flags, "--ssl-crl=\"$self->{ssl_crl}\""     if $self->{ssl_crl};
-    push @flags, "--ssl-cipher=\"$self->{ssl_cipher}\"" if $self->{ssl_cipher};
+    push @flags, "--ssl-ca=$self->{ssl_ca}"         if $self->{ssl_ca};
+    push @flags, "--ssl-cert=$self->{ssl_cert}"     if $self->{ssl_cert};
+    push @flags, "--ssl-key=$self->{ssl_key}"       if $self->{ssl_key};
+    push @flags, "--ssl-crl=$self->{ssl_crl}"       if $self->{ssl_crl};
+    push @flags, "--ssl-cipher=$self->{ssl_cipher}" if $self->{ssl_cipher};
 
     return join(' ', @flags);
 }
@@ -3094,10 +3094,12 @@ sub _db_auth_plugin_guard {
 # BEHAVIOR:
 #     - Forks the current process.
 #     - Child:
-#         * Redirects stdout/stderr to the specified logfile.
-#         * Detaches from the parent session (setsid()).
+#         * Redirects stdout to the specified logfile.
 #         * Executes the daemon via exec(@cmd_ref).
 #         * On exec() failure, prints an error and exits non-zero.
+#       (No setsid(), no FD-closing, no STDERR redirection — avoids breaking
+#        SSL initialization and inherited runtime state.)
+#
 #     - Parent:
 #         * Performs a brief liveness check to detect immediate exec failure.
 #         * Reaps the child if it died before exec() (avoids zombies).
@@ -3109,7 +3111,7 @@ sub _db_auth_plugin_guard {
 #       redirection, or backgrounding may be included.
 #     - $pidfile is created and written by the parent after fork() and after
 #       confirming the child is alive.
-#     - $logfile receives all stdout/stderr from the daemon.
+#     - $logfile receives all stdout from the daemon.
 #     - Caller is responsible for readiness checks (socket + ping).
 #     - Returns OK or ERROR only; no partial-success semantics.
 #
@@ -3121,63 +3123,45 @@ sub _db_auth_plugin_guard {
 #     - The liveness check is essential: fork() success does not guarantee
 #       exec() success. Without this check, stale PID files and false-positive
 #       "start succeeded" states can occur.
+#     - This simplified implementation avoids setsid(), FD-closing, and STDERR
+#       redirection because those operations break SSL initialization for both
+#       MariaDB (WolfSSL) and MySQL (OpenSSL/WolfSSL).
 ###############################################################################
 sub _spawn_background {
     my ($self, $cmd_ref, $pidfile, $logfile) = @_;
+    my $_tag = "MySQL::_spawn_background: ";
 
     # ensure log directory exists
     my ($vol, $dir, undef) = File::Spec->splitpath($logfile);
     my $logdir = File::Spec->catpath($vol, $dir, '');
     File::Path::make_path($logdir) unless -d $logdir;
 
-    # fork the daemon
     my $pid = fork();
     if (!defined $pid) {
-        PrintError("_spawn_background: fork() failed: $!");
+        PrintError($_tag."fork() failed: $!");
         return ERROR;
     }
 
     if ($pid == 0) {
-        # child: redirect stdout/stderr to logfile
-        open(STDOUT, '>', $logfile) or do {
-            print STDERR "_spawn_background: cannot write $logfile\n";
-            exit 1;
-        };
-        open(STDERR, '>&STDOUT') or do {
-            print STDERR "_spawn_background: cannot dup STDERR\n";
-            exit 1;
-        };
+        open(STDOUT, '>', $logfile)
+            or die "$_tag Cannot write $logfile: $!";
 
-        # detach from parent session
-        POSIX::setsid();
-
-        # close inherited filehandles (hardening)
-        for my $fd (3 .. 255) {
-            POSIX::close($fd);
-        }
-
-        # exec the daemon (never returns on success)
-        exec(@$cmd_ref) or do {
-            print STDERR "_spawn_background: exec() failed: $!\n";
-            exit 1;
-        };
+        exec(@$cmd_ref)
+            or die "$_tag exec() failed: $!";
     }
 
-    # parent: brief liveness check to detect immediate exec() failure
     sleep 1;
     unless (kill 0, $pid) {
-        # child died before exec() or during early startup
-        waitpid($pid, 0);   # avoid zombie
-        PrintError("_spawn_background: child process $pid exited before exec() or startup");
+        waitpid($pid, 0);
+        PrintError($_tag."Child process $pid exited before startup");
         return ERROR;
     }
 
-    # write pidfile only after confirming child is alive
     if (open(my $fh, '>', $pidfile)) {
         print $fh $pid;
         close $fh;
     } else {
-        PrintError("_spawn_background: cannot write pidfile $pidfile");
+        PrintError($_tag."Cannot write pidfile $pidfile");
         return ERROR;
     }
 

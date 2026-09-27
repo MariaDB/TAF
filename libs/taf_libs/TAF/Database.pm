@@ -3,7 +3,7 @@ package TAF::Database;
 # TAF::Database
 #
 # Created: December 2025
-# Last Modified: July 2026
+# Last Modified: September 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -83,6 +83,7 @@ package TAF::Database;
 #     - Database plugins implement engine-specific behavior; this module
 #       enforces framework-level correctness and safety.
 ###############################################################################
+our $VERSION = '4.0';
 #-------------------------------------------------------------------------------
 #                            Imports
 #-------------------------------------------------------------------------------
@@ -117,7 +118,6 @@ use TAF::Utilities qw(
 );
 
 use constant TAF_DATABASE => 'TAF::Database-> ';
-our $VERSION = '3.1';
 
 #===============================================================================
 #                              Exports
@@ -126,7 +126,6 @@ our $VERSION = '3.1';
 # remain private to preserve a deterministic, contributor-proof API.
 our @EXPORT = qw(
     CheckSslFiles
-    ConfigContainsSSL
     DbInit
     DbReset
     DbRestart
@@ -209,73 +208,6 @@ our %PROCESS_SIGNATURE = (
 #                            Exported Subs
 #===============================================================================
 
-#===============================================================================
-# ConfigContainsSSL
-#
-# PURPOSE:
-#     Perform an early-phase validation of a database configuration file to
-#     detect forbidden SSL-related directives. This routine is intended to run
-#     before logging is initialized and before any database lifecycle or plugin
-#     operations occur. If any SSL options are found, the caller is expected to
-#     terminate immediately.
-#
-# PARAMETERS:
-#     $ctx  - Framework context hashref containing:
-#                 { options => {}, dirs => {}, flags => {}, obj => {}, taf_var => {} }
-#             The database configuration file path is taken from:
-#                 $ctx->{options}->{db_config_file}
-#
-# BEHAVIOR:
-#     - Open the database configuration file for reading.
-#     - Scan each line, ignoring comment lines.
-#     - Perform case-insensitive keyword matching for forbidden SSL directives.
-#     - Return ERROR immediately when a forbidden directive is detected.
-#     - Return OK when no SSL directives are found.
-#     - Perform no logging, state mutation, or context-dependent operations.
-#
-# RETURNS:
-#     OK    - No SSL directives found.
-#     ERROR - Forbidden SSL directive detected or file could not be opened.
-#
-# SIDE EFFECTS:
-#     None.
-#
-# NOTES:
-#     Caller is responsible for printing or handling any returned error
-#     condition and for terminating early when required.
-#===============================================================================
-sub ConfigContainsSSL {
-    my ($ctx) = @_;
-
-    my $options = $ctx->{options};
-    my $file    = $options->{db_config_file};
-
-    my @forbidden = qw(
-        ssl
-        ssl-ca
-        ssl-cert
-        ssl-key
-        ssl-crl
-        ssl-cipher
-        tls-version
-        tls-ciphersuites
-        require_secure_transport
-    );
-
-    open my $fh, '<', $file or return ERROR;
-
-    while (my $line = <$fh>) {
-        next if $line =~ /^\s*#/;
-        foreach my $kw (@forbidden) {
-            if ($line =~ /\b$kw\b/i) {
-                print("\n\tSSL option '$kw' found in $file") if $options->{verbose};
-                return ERROR;
-            }
-        }
-    }
-
-    return OK;   # no SSL found
-}
 
 #===============================================================================
 # DbInit
@@ -899,6 +831,24 @@ sub ValidateInstallLoadDbPlugin {
     my $resolved = TAF::Utilities::NormalizePluginName($dbmaker);
     my $plugin   = TAF::Utilities::NormalizePluginName($db_plugin // $resolved);
 
+    # If PostgreSQL, fix the socket filename BEFORE loading the plugin
+    # Plugin's can not pass back, and PG is a bit different around unix sockets.
+    if ($resolved eq 'postgres') {
+
+        my $sock = $options_ref->{db_socket};
+
+        # Strip filename → leave directory
+        $sock =~ s{/[^/]+$}{};
+
+        # Compute real PostgreSQL socket filename
+        my $real = File::Spec->catfile($sock, ".s.PGSQL.$options_ref->{db_port}");
+
+        # Overwrite TAF's socket path BEFORE handing it to the plugin
+        $options_ref->{db_socket} = $real;
+        
+        $options_ref->{db_engine} = "postgres_native";
+    }
+
     #---------------------------------------------------------------------
     # Enforce plugin match if user explicitly set taf_db_makers_plugin
     #---------------------------------------------------------------------
@@ -984,7 +934,7 @@ sub ValidateInstallLoadDbPlugin {
 #     - Validates only file existence and readability.
 #     - Does not validate certificate contents or engine-specific SSL behavior.
 #     - SSL directives in the database configuration file are rejected earlier
-#       by ConfigContainsSSL().
+#       by DatabaseConfigurationHanderler.pm _ConfigContainsSSL().
 #     - Does not modify the context object.
 #===============================================================================
 sub CheckSslFiles {

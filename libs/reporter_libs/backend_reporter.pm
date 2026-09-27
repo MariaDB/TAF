@@ -1,11 +1,87 @@
 package reporter_libs::backend_reporter;
+#############################################################################
+# reporter_libs::backend_reporter
+#
+# Created: January 2026
+# Last Modified: January 2026
+#
+# This file is part of the Test Automation Framework (TAF).
+# Copyright (c) 2025-2026 MariaDB Foundation
+# and Jonathan "jeb" Miller
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; version 2 or later of the License.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335
+#
+# Licensed under the GNU General Public License, version 2 or later (GPLv2+).
+# See https://www.gnu.org/licenses/ for details.
+#
+# PURPOSE:
+#     Provide the backend ingestion path for benchmark results. This reporter
+#     constructs a RAW payload identical to taf_res_raw_text.pm and pipes it
+#     directly to the Java backend parser for database insertion.
+#
+# ARCHITECTURAL ROLE:
+#     - Implements the GenerateResults() interface required by TAF::Reports.
+#     - Acts as the plugin-based ingestion path for backend storage.
+#     - Emits a RAW payload matching the canonical format produced by
+#       taf_res_raw_text.pm, including:
+#           * RAW header
+#           * Run-Level Metadata (canonical provenance fields)
+#           * Full Perl structure dump
+#     - Performs no config resolution, no CLI inference, and no metadata
+#       guessing. All provenance must be supplied by the caller.
+#     - Invokes the Java backend parser (TafBackendCli) with --stdin and
+#       captures stdout/stderr for ingest status.
+#
+# WHAT THIS MODULE DOES NOT DO:
+#     - Does not generate HTML, JSON, or text reports.
+#     - Does not validate semantic correctness of metadata or metrics.
+#     - Does not compute statistics or transform metric arrays.
+#     - Does not modify result directories or archive output.
+#     - Does not infer missing provenance fields or reconstruct config files.
+#
+# CONTRACT:
+#     - Caller must invoke:
+#           GenerateResults($resultsRef, $filename, $outputDir)
+#     - $resultsRef must be an arrayref of result entry hashrefs created by
+#       TAF::Reports::BuildResultEntry().
+#     - Each result entry must contain:
+#           metadata => hashref of lowercase metadata fields
+#           metrics  => arrayref of metric hashes
+#     - The RAW payload emitted must match taf_res_raw_text.pm exactly.
+#     - Backend parser must receive the RAW payload via STDIN.
+#
+# GUARANTEES:
+#     - RAW payload format is deterministic and stable for diffing.
+#     - Canonical provenance fields (db_config_contents and
+#       generated_properties_file_contents) are emitted exactly as provided.
+#     - No obsolete raw-block fields are emitted.
+#     - Backend ingestion behavior is identical between plugin and raw-file
+#       ingestion paths.
+#
+# NOTES:
+#     - This reporter is intended solely for backend ingestion, not human
+#       consumption.
+#     - Any change to RAW payload format must be reflected here and in
+#       taf_res_raw_text.pm to maintain ingestion consistency.
+#############################################################################
+
 use strict;
 use warnings;
 use IPC::Open3;
 use Symbol 'gensym';
 use File::Spec;
 use Data::Dumper;
-use reporter_libs::_taf_paths qw(resolve_config_path);
 
 use TAF::Logging qw(PrintError PrintWarning PrintVerbose TAFMsg);
 
@@ -22,17 +98,16 @@ sub GenerateResults {
     }
 
     my $first = $resultsRef->[0];
-    my $last  = $resultsRef->[-1];
     my $meta  = $first->{metadata} || {};
 
     # ----------------------------------------------------------------------
-    # Build raw payload (same style as taf_res_raw_text)
+    # RAW PAYLOAD (must match taf_res_raw_text EXACTLY)
     # ----------------------------------------------------------------------
     my $testname = $first->{test_name}          // 'unknown_test';
     my $host     = $meta->{test_host}           // 'unknown_host';
     my $dbmaker  = $meta->{database_maker}      // 'unknown_dbmaker';
     my $endtime  = $meta->{timestamp}           // 'unknown_time';
-
+    
     my $raw = "";
     $raw .= "=== Raw Results Dump ===\n";
     $raw .= "Test Name   : $testname\n";
@@ -40,7 +115,27 @@ sub GenerateResults {
     $raw .= "Database    : $dbmaker\n";
     $raw .= "End Time    : $endtime\n";
     $raw .= "=========================\n\n";
-
+    
+    # ----------------------------------------------------------------------
+    # Run-Level Metadata (canonical + required fields only)
+    # ----------------------------------------------------------------------
+    $raw .= "=== Run-Level Metadata ===\n";
+    
+    $raw .= "generated_properties_file=$meta->{generated_properties_file}\n";
+    $raw .= "generated_properties_file_contents=$meta->{generated_properties_file_contents}\n";
+    
+    $raw .= "db_config_origin=$meta->{db_config_origin}\n";
+    $raw .= "db_config_source_file=$meta->{db_config_source_file}\n";
+    $raw .= "db_config_tmp_file=$meta->{db_config_tmp_file}\n";
+    $raw .= "db_config_contents=$meta->{db_config_contents}\n";
+    
+    $raw .= "taf_commandline_literal=$meta->{taf_commandline_literal}\n\n";
+    
+    # ----------------------------------------------------------------------
+    # Full Perl structure dump
+    # ----------------------------------------------------------------------
+    $raw .= "=== Perl Structure Dump ===\n\n";
+    
     {
         local $Data::Dumper::Indent   = 1;
         local $Data::Dumper::Sortkeys = 1;
@@ -50,38 +145,27 @@ sub GenerateResults {
     }
 
     # ----------------------------------------------------------------------
-    # DB CONFIG EXTRACTION (MATCHES FORMATTED TEXT REPORTER EXACTLY)
+    # NEW ARCHITECTURE:
+    # NO config resolution
+    # NO CLI inference
+    # NO resolve_config_path
+    # NO db_config_file
+    #
+    # We consume ONLY canonical metadata fields.
     # ----------------------------------------------------------------------
-    my $cmdline = $meta->{taf_commandline} // '';
-    my ($literal, $props) = split /:: prop file contents ->/, $cmdline, 2;
 
-    my $dbconfig;
+    my $canon_cfg = $meta->{db_config_contents}
+                    // '[no canonical DB config contents]';
 
-    # 1. Command-line override
-    if ($literal =~ /--db-config-file=([^ ]+)/) {
-        $dbconfig = $1;
+    my $raw_cfg   = $meta->{raw_db_config_block}
+                    // '[no raw DB config block]';
 
-    # 2. Properties override
-    } elsif (defined $props && $props =~ /taf\.db_config_file=([^ ]+)/) {
-        $dbconfig = $1;
-
-    # 3. Metadata fallback
-    } else {
-        $dbconfig = $meta->{db_config_file} // 'unknown';
-    }
-
-    my $resolved_cfg = resolve_config_path($dbconfig);
-    my $db_cfg_flag = "";
-
-    if ($resolved_cfg && -f $resolved_cfg) {
-        $db_cfg_flag = "--db-config-file $resolved_cfg";
-        PrintVerbose("$tag Using DB config file: $resolved_cfg");
-    } else {
-        PrintWarning("$tag DB config file missing or unresolved: $dbconfig");
-    }
+    my $dbconfig_origin = $meta->{db_config_origin}        // 'unknown';
+    my $dbconfig_source = $meta->{db_config_source_file}   // 'unknown';
+    my $dbconfig_tmp    = $meta->{db_config_tmp_file}      // 'unknown';
 
     # ----------------------------------------------------------------------
-    # Extract Java runtime + classpath (these MUST be in metadata)
+    # Java runtime + classpath (MUST be in metadata)
     # ----------------------------------------------------------------------
     my $java_bin    = $meta->{java_bin};
     my $backend_jar = $meta->{backend_parser_jar};
@@ -107,7 +191,7 @@ sub GenerateResults {
 
     my $classpath = join(":", $backend_jar, $jdbc_jar, $json_jar);
 
-    # Optional backend config
+    # Optional backend config (still allowed)
     my $backend_cfg = $meta->{backend_config};
     my $backend_cfg_flag = "";
     if ($backend_cfg && -f $backend_cfg) {
@@ -116,15 +200,14 @@ sub GenerateResults {
     }
 
     # ----------------------------------------------------------------------
-    # Build Java command
+    # Build Java command (NO db-config-file flag anymore)
     # ----------------------------------------------------------------------
     my @cmd = (
         $java_bin,
         "-cp", $classpath,
         "taf.backend.parser.TafBackendCli",
         "--stdin",
-        $db_cfg_flag     ? split(/\s+/, $db_cfg_flag)     : (),
-        $backend_cfg_flag? split(/\s+/, $backend_cfg_flag): (),
+        $backend_cfg_flag ? split(/\s+/, $backend_cfg_flag) : (),
     );
 
     PrintVerbose("$tag Executing backend parser:");

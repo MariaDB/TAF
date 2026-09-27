@@ -3,9 +3,9 @@ package mariadb;
 # mariadb.pm - MariaDB Database Plugin for TAF
 #
 # Created:       January 2026
-# Last Modified: July 2026
+# Last Modified: August 2026
 #
-# Vesion: 3.2
+# Vesion: 4.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -528,9 +528,12 @@ sub db_start {
     push @cmd, "--port=$self->{port}" if $self->{port};
 
     # SSL flags
-    if ($self->{server_ssl_flags}) {
-        push @cmd, split(/\s+/, $self->{server_ssl_flags});
-    }
+    if (!$self->{init_mode}) {
+        if ($self->{server_ssl_flags}) {
+            PrintVerbose("SSL FLAGS RAW: [$self->{server_ssl_flags}]");
+            push @cmd, split(/\s+/, $self->{server_ssl_flags});
+        }
+     }
 
     # Extra args
     if ($self->{extra_args}) {
@@ -548,7 +551,8 @@ sub db_start {
     }
 
     PrintVerbose($_st."Starting MariaDB runtime server");
-
+    PrintVerbose($_st."MariaDB command: " . join(" ", @cmd));
+    
     # Launch server using fork/exec
     my $rc = $self->_spawn_background(\@cmd, $pidfile, $log);
     if ($rc != OK) {
@@ -589,7 +593,7 @@ sub db_start {
         my $dump_cmd = "$client --socket=$self->{socket} -u root -p\"$self->{db_root_pass}\" -e \"SHOW VARIABLES\" > $vars_file 2>&1";
     
         system($dump_cmd) == 0
-            ? PrintVerbose("Dumped SHOW VARIABLES to $vars_file")
+            ? PrintVerbose($_st."Dumped SHOW VARIABLES to $vars_file")
             : PrintError("Failed to dump SHOW VARIABLES to $vars_file");
     }
 
@@ -1234,34 +1238,42 @@ sub _compute_server_ssl_flags {
     my $mode = $self->{ssl_mode} // "off";
     $mode = lc $mode;
 
-    # SSL disabled explicitly
-    if ($mode eq "off") {
-        return "";
-    }
+    return "" if $mode eq "off";
 
-    # For all other modes, enable SSL if files exist
     my @flags;
 
-    push @flags, "--ssl-ca=\"$self->{ssl_ca}\""
-        if defined $self->{ssl_ca} && length $self->{ssl_ca};
+    my $ssl_lib_output = `$self->{mariadbd_bin} --verbose --help 2>&1`;
+    my $is_wolfssl  = ($ssl_lib_output =~ /WolfSSL/i)  ? 1 : 0;
+    my $is_openssl  = ($ssl_lib_output =~ /OpenSSL/i)  ? 1 : 0;
 
-    push @flags, "--ssl-cert=\"$self->{ssl_cert}\""
+    push @flags, "--ssl";
+
+    if (defined $self->{ssl_ca} && length $self->{ssl_ca}) {
+        push @flags, "--ssl-ca=$self->{ssl_ca}";
+
+        if ($self->{ssl_ca} =~ m|^(.*)/|) {
+            my $capath = $1;
+            push @flags, "--ssl-capath=$capath" if $is_wolfssl;
+        }
+    }
+
+    push @flags, "--ssl-cert=$self->{ssl_cert}"
         if defined $self->{ssl_cert} && length $self->{ssl_cert};
 
-    push @flags, "--ssl-key=\"$self->{ssl_key}\""
+    push @flags, "--ssl-key=$self->{ssl_key}"
         if defined $self->{ssl_key} && length $self->{ssl_key};
 
-    push @flags, "--ssl-crl=\"$self->{ssl_crl}\""
+    push @flags, "--ssl-crl=$self->{ssl_crl}"
         if defined $self->{ssl_crl} && length $self->{ssl_crl};
 
-    push @flags, "--ssl-cipher=\"$self->{ssl_cipher}\""
-        if defined $self->{ssl_cipher} && length $self->{ssl_cipher};
+    if ($is_openssl) {
+        push @flags, "--ssl-cipher=$self->{ssl_cipher}"
+            if defined $self->{ssl_cipher} && length $self->{ssl_cipher};
+    }
 
-    # MariaDB does not distinguish require/verify_* on the server side.
-    # Strictness is enforced by the client. Server only needs file flags.
-    my $joined = join(" ", @flags);
-    return $joined;
+    return join(" ", @flags);
 }
+
 
 ################################################################################
 # _db_validate_binaries
@@ -2493,53 +2505,62 @@ sub _db_stop_bootstrap {
     return OK;
 }
 
-################################################################################
+###############################################################################
 # _spawn_background
 #
 # PURPOSE:
 #     Launch a long-running daemon (mysqld or mariadbd) without invoking a
-#     shell. Provides deterministic fork/exec behavior, correct PID tracking,
-#     and uniform behavior across MySQL and MariaDB plugins. Replaces all uses
-#     of system("cmd &") and eliminates shell-quoting, backgrounding, and
-#     /bin/sh dependencies.
+#     shell. This routine replaces all uses of system("cmd &") and provides:
+#         - deterministic fork/exec behavior
+#         - correct PID tracking
+#         - no shell quoting or splitting issues
+#         - no dependency on /bin/sh
+#         - identical behavior across MySQL and MariaDB plugins
 #
 # BEHAVIOR:
 #     - Forks the current process.
 #     - Child:
-#         * Redirects stdout/stderr to the specified logfile.
-#         * Detaches from the parent session (setsid()).
-#         * Closes inherited filehandles for safety hardening.
-#         * Executes the daemon using exec(@cmd_ref).
+#         * Redirects stdout to the specified logfile.
+#         * Executes the daemon via exec(@cmd_ref).
+#         * On exec() failure, prints an error and exits non-zero.
+#       (No setsid(), no FD-closing, no STDERR redirection — avoids breaking
+#        SSL initialization and inherited runtime state.)
+#
 #     - Parent:
-#         * Performs a brief liveness check (kill 0).
+#         * Performs a brief liveness check to detect immediate exec failure.
+#         * Reaps the child if it died before exec() (avoids zombies).
 #         * Writes the child's PID to the provided pidfile.
 #         * Returns OK on success or ERROR on failure.
 #
 # CONTRACT:
-#     - @cmd_ref must be an argv arrayref, not a shell string. No quoting,
-#       redirection, or "&" may be included.
-#     - $pidfile is created and written only after confirming the child is alive.
-#     - $logfile receives all stdout/stderr from the daemon.
-#     - Caller is responsible for readiness checks (socket creation + ping).
+#     - @cmd_ref must be an argv list, not a shell string. No quoting,
+#       redirection, or backgrounding may be included.
+#     - $pidfile is created and written by the parent after fork() and after
+#       confirming the child is alive.
+#     - $logfile receives all stdout from the daemon.
+#     - Caller is responsible for readiness checks (socket + ping).
 #     - Returns OK or ERROR only; no partial-success semantics.
 #
 # NOTES:
-#     - Performs no lifecycle logging (no StageStart/StageEnd); this is a
-#       low-level primitive used by db_start() and bootstrap routines.
-#     - Behavior is POSIX-correct and identical across MySQL and MariaDB.
-#     - Caller must not append "&", redirections, or shell constructs; all
-#       backgrounding and output routing are handled internally.
-################################################################################
+#     - This routine performs no lifecycle logging (no StageStart/StageEnd);
+#       it is a low-level primitive used by db_start() and bootstrap routines.
+#     - All backgrounding and output routing are handled internally; callers
+#       must not append "&" or redirections.
+#     - The liveness check is essential: fork() success does not guarantee
+#       exec() success. Without this check, stale PID files and false-positive
+#       "start succeeded" states can occur.
+#     - This simplified implementation avoids setsid(), FD-closing, and STDERR
+#       redirection because those operations break SSL initialization for both
+#       MariaDB (WolfSSL) and MySQL (OpenSSL/WolfSSL).
+###############################################################################
 sub _spawn_background {
     my ($self, $cmd_ref, $pidfile, $logfile) = @_;
     my $_tag = "MariaDB::_spawn_background: ";
 
-    # ensure log directory exists
     my ($vol, $dir, undef) = File::Spec->splitpath($logfile);
     my $logdir = File::Spec->catpath($vol, $dir, '');
     File::Path::make_path($logdir) unless -d $logdir;
 
-    # fork the daemon
     my $pid = fork();
     if (!defined $pid) {
         PrintError($_tag."fork() failed: $!");
@@ -2547,41 +2568,21 @@ sub _spawn_background {
     }
 
     if ($pid == 0) {
-        # child: redirect stdout/stderr to logfile
-        open(STDOUT, '>', $logfile) or do {
-            print STDERR $_tag."Cannot write $logfile\n";
-            exit 1;
-        };
-        open(STDERR, '>&STDOUT') or do {
-            print STDERR $_tag."Cannot dup STDERR\n";
-            exit 1;
-        };
+        open(STDOUT, '>', $logfile)
+            or die "$_tag Cannot write $logfile: $!";
 
-        # detach from parent session
-        POSIX::setsid();
-
-        # close inherited filehandles (safety hardening)
-        for my $fd (3 .. 255) {
-            POSIX::close($fd);
-        }
-
-        # exec the daemon (never returns on success)
-        exec(@$cmd_ref) or do {
-            print STDERR $_tag."exec() failed: $!\n";
-            exit 1;
-        };
+        # IMPORTANT: bootstrap (init_mode) must behave EXACTLY as before
+        exec(@$cmd_ref)
+            or die "$_tag exec() failed: $!";
     }
 
-    # parent: brief liveness check to detect immediate exec() failure
     sleep 1;
     unless (kill 0, $pid) {
-        # child died before or during exec(); reap to avoid zombie
         waitpid($pid, 0);
-        PrintError($_tag."Child process $pid exited before exec() or startup");
+        PrintError($_tag."Child process $pid exited before startup");
         return ERROR;
     }
 
-    # parent: write pidfile only after confirming child is alive
     if (open(my $fh, '>', $pidfile)) {
         print $fh $pid;
         close $fh;
@@ -2592,6 +2593,8 @@ sub _spawn_background {
 
     return OK;
 }
+
+
 
 ################################################################################
 # _wait_for_start

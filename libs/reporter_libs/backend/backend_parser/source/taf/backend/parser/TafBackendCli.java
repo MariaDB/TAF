@@ -1,28 +1,30 @@
 package taf.backend.parser;
 /******************************************************************************
  * TafBackendCli.java
- * TAF-Backend-Parser Version: 1.0
+ * TAF-Backend-Parser Version: 1.1
  *
  * Created: May 2026
- * Last Modified: June 2026
+ * Last Modified: August 2026
  *
  * This file is part of the Test Automation Framework (TAF).
- * Copyright (c) 2026 MariaDB Foundation and Jonathan "jeb" Miller
+ * Copyright (c) 2026
+ * MariaDB Foundation and Jonathan "jeb" Miller
  *
  * Licensed under the GNU General Public License, version 2 or later (GPLv2+).
  * See https://www.gnu.org/licenses/ for details.
  *
  * PURPOSE:
- *     Provide the command line interface for the TAF backend. This module
- *     implements all user facing backend operations including raw result
+ *     Provide the command-line interface for the TAF backend. This module
+ *     implements all user-facing backend operations including raw result
  *     processing, baseline comparison, and baseline creation. It coordinates
  *     parser invocation, configuration loading, and database ingest actions
  *     to produce a complete backend workflow.
  *
  * SCOPE OF THIS MODULE:
  *     - Parse and validate CLI arguments and enforce mode exclusivity.
- *     - Load backend configuration and optional DB parameter metadata.
+ *     - Load backend configuration (DB connection only).
  *     - Read raw test output from file or stdin and invoke RawResultParser.
+ *     - Extract DB configuration from raw metadata (db_config_contents).
  *     - Ingest system identity, configuration, test run metadata, and
  *       iteration results into the backend database.
  *     - Perform baseline comparison for an existing run.
@@ -31,22 +33,32 @@ package taf.backend.parser;
  *
  * WHAT THIS MODULE DOES NOT DO:
  *     - Does not parse raw test output (delegates to RawResultParser).
+ *     - Does not interpret DB configuration semantics.
+ *     - Does not load DB config files from disk (deprecated).
  *     - Does not implement SQL or database schema logic (delegates to DbIngest).
  *     - Does not perform metric comparison or change detection logic.
- *     - Does not interpret test semantics or enforce correctness rules.
  *
  * CONTRACT:
  *     - Exactly one mode must be selected: process, compare, set-baseline,
  *       or stdin processing.
  *     - backend.conf must be readable and valid.
  *     - Raw results must be provided via file or stdin in process mode.
+ *     - DB configuration is sourced exclusively from raw metadata.
  *     - All failures must be explicit and produce a nonzero exit code.
+ *
+ * GUARANTEES:
+ *     - No external DB config file is required or referenced.
+ *     - db_config_contents is parsed deterministically.
+ *     - Section headers (e.g., [mysqld]) are ignored safely.
+ *     - Empty or missing DB config metadata produces a placeholder blob.
+ *     - All ingest operations are performed in a stable order.
  *
  * NOTES:
  *     This module defines the public CLI behavior of the TAF backend. Any
  *     change to mode semantics, ingest workflow, or configuration handling
  *     must be reflected in this header and in the TAF manual.
  ******************************************************************************/
+
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -62,6 +74,9 @@ public class TafBackendCli {
     private static final Logger LOG = Logger.getLogger(TafBackendCli.class.getName());
     public static boolean DEBUG = true;
 
+    // ------------------------------------------------------------
+    // Entry point
+    // ------------------------------------------------------------
     public static void main(String[] args) {
         CliArgs cli;
         try {
@@ -118,7 +133,7 @@ public class TafBackendCli {
         if (cli.isProcessMode())     modes++;
         if (cli.isCompareMode())     modes++;
         if (cli.isSetBaselineMode()) modes++;
-        if (cli.stdinMode) modes++;
+        if (cli.stdinMode)           modes++;
 
         if (modes == 0) {
             System.out.println("Error: must specify one of --raw-results-file, --run-id, or --set-baseline.");
@@ -130,12 +145,14 @@ public class TafBackendCli {
             return false;
         }
 
-        if (cli.isProcessMode() && !cli.stdinMode && (cli.rawResultsFile == null || cli.rawResultsFile.isBlank())) {
+        if (cli.isProcessMode() && !cli.stdinMode &&
+            (cli.rawResultsFile == null || cli.rawResultsFile.isBlank())) {
             System.out.println("Error: --raw-results-file requires a valid path unless --stdin is used.");
             return false;
         }
 
-        if (cli.isProcessMode() && (cli.rawResultsFile == null || cli.rawResultsFile.isBlank())) {
+        if (cli.isProcessMode() &&
+            (cli.rawResultsFile == null || cli.rawResultsFile.isBlank())) {
             System.out.println("Error: --raw-results-file requires a valid path.");
             return false;
         }
@@ -181,7 +198,8 @@ public class TafBackendCli {
             if (cli.stdinMode) {
                 debug("Reading raw results from STDIN");
 
-                String rawText = new String(System.in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                String rawText = new String(System.in.readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
 
                 if (rawText == null || rawText.isBlank()) {
                     System.out.println("Error: no raw results received on stdin.");
@@ -191,7 +209,6 @@ public class TafBackendCli {
                 parsed = RawResultParser.parse(rawText);
 
             } else {
-                // Existing file mode
                 File f = new File(cli.rawResultsFile);
 
                 if (!f.exists() || !f.canRead()) {
@@ -202,6 +219,9 @@ public class TafBackendCli {
                 debug("Reading raw results: " + cli.rawResultsFile);
                 parsed = RawResultParser.parse(Path.of(cli.rawResultsFile));
             }
+            
+            Object tagObj = parsed.metadata.get("test_case_tag");
+            parsed.testCaseTag = (tagObj != null ? tagObj.toString() : null);
 
             // ------------------------------------------------------------
             // Validate parser output
@@ -212,59 +232,54 @@ public class TafBackendCli {
             }
 
             // ------------------------------------------------------------
-            // Load DB config file (optional)
+            // DB CONFIG FROM RAW METADATA ONLY
             // ------------------------------------------------------------
-            if (cli.dbConfigFile != null) {
-                debug("Loading DB config file: " + cli.dbConfigFile);
+            Object cfgObj = parsed.metadata != null
+                ? parsed.metadata.get("db_config_contents")
+                : null;
 
-                try {
-                	List<String> lines = Files.readAllLines(Path.of(cli.dbConfigFile), java.nio.charset.StandardCharsets.UTF_8);
-                    List<Map<String, String>> params = new ArrayList<>();
+            if (cfgObj != null) {
+                String cfg = cfgObj.toString();
+                String[] parts = cfg.split("\\|");
 
-                    for (String line : lines) {
-                        line = line.trim();
+                List<Map<String,String>> params = new ArrayList<>();
 
-                        if (line.isEmpty() || line.startsWith("#") || line.startsWith(";"))
-                            continue;
+                for (String p : parts) {
+                    p = p.trim();
+                    if (p.isEmpty()) continue;
 
-                        if (line.startsWith("[") && line.endsWith("]"))
-                            continue;
+                    // Skip section headers like [mysqld]
+                    if (p.startsWith("[") && p.endsWith("]")) continue;
 
-                        int eq = line.indexOf('=');
-                        if (eq > 0) {
-                            String name  = line.substring(0, eq).trim().toLowerCase();
-                            String value = line.substring(eq + 1).trim();
-                            if (value == null) value = "";
-                            Map<String, String> entry = new HashMap<>();
-                            entry.put("name", name);
-                            entry.put("value", value);
-                            params.add(entry);
-                            continue;
-                        }
+                    int eq = p.indexOf('=');
+                    if (eq <= 0) continue;
 
-                        // flag with no value
-                        String name = line.toLowerCase();
-                        Map<String, String> entry = new HashMap<>();
-                        entry.put("name", name);
-                        entry.put("value", "");
-                        params.add(entry);
-                    }
+                    String name  = p.substring(0, eq).trim().toLowerCase();
+                    String value = p.substring(eq + 1).trim();
 
-                    Map<String, Object> blob = new HashMap<>();
-                    blob.put("parameters", params);
+                    Map<String,String> entry = new HashMap<>();
+                    entry.put("name", name);
+                    entry.put("value", value);
+                    params.add(entry);
+                }
 
-                    parsed.configJsonBlob = JsonUtil.toJson(blob);
-                    parsed.configName = Path.of(cli.dbConfigFile).getFileName().toString();
+                Map<String,Object> blob = new HashMap<>();
+                blob.put("parameters", params);
 
-                } catch (Exception e) {
-                    System.out.println("Error: cannot read DB config file: " + cli.dbConfigFile);
-                    return 2;
+                parsed.configJsonBlob = JsonUtil.toJson(blob);
+                Object srcObj = parsed.metadata.get("db_config_source_file");
+                if (srcObj != null) {
+                    String full = srcObj.toString();
+                    int slash = full.lastIndexOf('/');
+                    parsed.configName = (slash >= 0 ? full.substring(slash + 1) : full);
+                } else {
+                    parsed.configName = "RAW_METADATA";
                 }
 
             } else {
-                System.out.println("WARNING: No --db-config-file provided. Using placeholder config.");
-                Map<String, Object> blob = new HashMap<>();
-                blob.put("parameters", new ArrayList<Map<String, String>>());
+                System.out.println("WARNING: No db_config_contents in metadata. Using placeholder config.");
+                Map<String,Object> blob = new HashMap<>();
+                blob.put("parameters", new ArrayList<Map<String,String>>());
                 parsed.configJsonBlob = JsonUtil.toJson(blob);
                 parsed.configName = "NO_CONFIG";
             }
@@ -306,15 +321,10 @@ public class TafBackendCli {
         }
     }
 
-
     // ------------------------------------------------------------
     // COMPARE MODE
     // ------------------------------------------------------------
     private static int runCompare(CliArgs cli) {
-        if (cli.dbConfigFile != null) {
-            System.out.println("Note: --db-config-file ignored in compare mode.");
-        }
-
         try {
             DbIngest.BaselineResult res = DbIngest.checkForBaseline(cli.runId);
             printBaselineStatus(res);
@@ -331,10 +341,6 @@ public class TafBackendCli {
     // SET BASELINE MODE
     // ------------------------------------------------------------
     private static int runSetBaseline(CliArgs cli) {
-        if (cli.dbConfigFile != null) {
-            System.out.println("Note: --db-config-file ignored in baseline mode.");
-        }
-
         try {
             long runId = cli.setBaselineId;
             int rows = DbIngest.setBaseline(runId);
@@ -384,7 +390,8 @@ public class TafBackendCli {
         System.out.println();
         System.out.println("Usage:");
         System.out.println("  Process raw text results:");
-        System.out.println("    --raw-results-file <path> [--db-config-file <path>] [--backend-config <path>]");
+        System.out.println("    --raw-results-file <path> [--backend-config <path>]");
+        System.out.println("    --stdin [--backend-config <path>]");
         System.out.println();
         System.out.println("  Compare a run against baseline:");
         System.out.println("    --run-id <id> [--backend-config <path>]");
@@ -394,16 +401,6 @@ public class TafBackendCli {
         System.out.println();
         System.out.println("  General:");
         System.out.println("    --help");
-        System.out.println();
-        System.out.println("Exit Codes:");
-        System.out.println("    0  success");
-        System.out.println("    1  invalid arguments");
-        System.out.println("    2  config load failure");
-        System.out.println("    3  file not found or unreadable");
-        System.out.println("    4  parser returned no data");
-        System.out.println("    5  ingest failure");
-        System.out.println("    6  baseline compare failure");
-        System.out.println("    7  baseline set failure");
         System.out.println();
     }
 }

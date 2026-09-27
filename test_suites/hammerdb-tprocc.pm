@@ -2,8 +2,8 @@
 # hammerdb-tprocc.pm - HammerDB TPROCC Test Suite for TAF
 #
 # Created: October 2025
-# Last Modified: July 2026
-# Version: 2.1
+# Last Modified: September 2026
+# Version: 4.0
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -98,12 +98,12 @@
 ## Metadata
 ## --------------------------------------------------------------------------
 our $properties_prefix = "hammerdb_tprocc";
-our $ts_version        = 2;
+our $ts_version        = 4;
 our $ts_revision       = 0;
 
 # Additional metadata (example placeholders, expand as needed)
 our $ts_type           = "benchmark";
-our $client_version    = "HammerDB-5.0";
+our $client_version    = "HammerDB-6.0";
 
 # Defaults file
 my $TS_defaults_file = $Bin . "/properties/default/hammerdb_tprocc_default.properties";
@@ -114,6 +114,9 @@ our @legalTests   = (@defaultTests);
 
 # Test Suite hammerdb_tprocc properties/options
 our %tsOpt = (
+    # Hammerdb *.db in tmp
+    always_recreate_hammerdb_state => undef,
+    hammerdb_state_dir             => undef,
     # Agent
     agent                 => undef,
     agent_port            => undef,
@@ -126,6 +129,7 @@ our %tsOpt = (
     # Executable and script paths
     client_executable     => undef,
     client_script_dir     => undef,
+    client_cpu_affinity   => undef,
     extra_args            => undef,
     test_client_version   => undef,
 
@@ -348,6 +352,9 @@ sub PreTestSetup {
  
     # Assign rampup from warmup_duration or fallback to default_rampup
     return ERROR if ResolveRampupDuration($_pts) != OK;
+    
+    # Resolve HammerDB client CPU affinity
+    return ERROR if ResolveClientCpuAffinity($_pts) != OK;
 
     # Warn if warmup_threads set (HammerDB handles warmup internally)
     if (defined $options{warmup_threads}) {
@@ -359,6 +366,10 @@ sub PreTestSetup {
     if (defined $tsOpt{db_type} && lc($tsOpt{db_type}) eq "mariadb") {
         $tsOpt{db_type} = "maria";
     }
+
+    # Remove hammder db state db's in tmp from previous runs if the past metrics
+    # and job id info is not needed to save space. 
+    ResetHammerdbState();
 
     $tsState{pre_test_done} = TRUE;
     StageEnd($_pts);
@@ -2809,12 +2820,14 @@ sub ResolveWarehouseCount {
 #
 # PURPOSE:
 #     Execute a hammerdbcli command line under bash and capture all output
-#     into a tailable file. This routine wraps system execution, redirects
-#     stdout and stderr, and maps the return code into framework constants.
+#     into a tailable file. Supports optional client CPU affinity by
+#     prepending taskset -c <cpulist> to the command line when configured.
 #
 # CONTRACT:
-#     - $cmdline must be a valid shell command suitable for hammerdbcli.
+#     - $cmd_line must be a valid shell command suitable for hammerdbcli.
 #     - $capture_path must be a writable file path.
+#     - If client_cpu_affinity is defined, the command is wrapped with
+#       taskset -c <cpulist> before execution.
 #     - All output from the command is redirected to $capture_path.
 #     - Returns OK if the command exits with rc 0, otherwise returns ERROR.
 #
@@ -2823,8 +2836,8 @@ sub ResolveWarehouseCount {
 #       output captured for later parsing and debugging.
 #
 # INPUT:
-#     $cmdline       Command line to execute.
-#     $capture_path  File path where output will be written.
+#     $cmd_line       Command line to execute.
+#     $capture_path   File path where output will be written.
 #
 # OUTPUT:
 #     - Writes command output to $capture_path.
@@ -2832,19 +2845,39 @@ sub ResolveWarehouseCount {
 #
 # SIDE EFFECTS:
 #     - Emits verbose messages describing the command being executed.
-#     - Emits error messages if the command fails.
+#     - Applies CPU affinity via taskset when configured.
 #     - Invokes StageStart and StageEnd for logging.
 #-----------------------------------------------------------------------------
 sub RunAndCapture {
-    my ($cmdline, $capture_path) = @_;
-    my $_rac = StageStart($_me." -> RunAndCapture ->");
+    my ($cmd_line, $capture_path) = @_;
+    my $_rac = StageStart($_me." -> RunAndCapture(TPROCH) ->");
 
+    # Make sure HAMMERDB_TPROCC_CONFIG is treated as an env assignment,
+    # not as the command name when taskset is prepended.
+    $cmd_line = "env $cmd_line";
+
+    # Optional CPU affinity for HammerDB client
+    if (defined $tsOpt{client_cpu_affinity}
+        && ref($tsOpt{client_cpu_affinity}) eq 'ARRAY'
+        && @{ $tsOpt{client_cpu_affinity}}) {
+
+        my $affinity_str = join(",", @{ $tsOpt{client_cpu_affinity}});
+        PrintVerbose($_rac . " Applying HammerDB CPU affinity: $affinity_str");
+
+        # Prepend taskset to the command line
+        $cmd_line = "taskset -c $affinity_str $cmd_line";
+    }
+
+    PrintVerbose($_rac." cmd ->: $cmd_line");
     PrintVerbose($_rac." Output ->: $capture_path");
-    my $shell_cmd = "bash -lc " . ShellQuote($cmdline);
+
+    my $shell_cmd = "bash -lc " . ShellQuote($cmd_line);
     my $final_cmd = "$shell_cmd > $capture_path 2>&1";
+
+    PrintVerbose($_rac." Running Command ->: $final_cmd");
+
     my $rc = system($final_cmd);
 
-    # Map to framework constants
     if ($rc == 0) {
         StageEnd($_rac);
         return OK;
@@ -2853,6 +2886,7 @@ sub RunAndCapture {
         return ERROR;
     }
 }
+
 
 #-----------------------------------------------------------------------------
 # RunChecksum
@@ -3214,16 +3248,22 @@ sub WriteResultsText {
 #     written into the results directory.
 #
 # CONTRACT:
-#     - $results_dir must be writable.
-#     - $tsOpt{db_type} must be defined and must match a key in the
-#       dispatch table; otherwise this routine returns ERROR.
+#     - results_dir must be writable.
+#     - tsOpt{db_type} must be defined and must match a key in the dispatch
+#       table; otherwise this routine returns ERROR.
 #     - Database-specific config writers must accept:
-#           ($fh, $threads)
+#           (fh, threads)
 #       and must write all connection and workload parameters using the
-#       canonical sources (%options, %tsOpt, %tsState).
-#     - When $caller eq "setup", the thread count is forced to the
-#       warehouse count stored in $tsState{warehouses}. HammerDB schema
-#       builders must not exceed the number of warehouses.
+#       canonical sources (options, tsOpt, tsState).
+#     - When caller eq "setup", the thread count is constrained by three
+#       independent limits:
+#           requested thread count
+#           warehouse count
+#           physical core count
+#       The minimum of the three is used.
+#       Contributed-by: Amrendra Kumar <amroo76@gmail.com>
+#       Rationale: prevent schema builder thread explosion on small hosts by
+#       enforcing physical core count as an upper bound during setup.
 #     - On success, HAMMERDB_TPROCC_CONFIG is updated to point to the
 #       generated file.
 #     - Returns OK on success, ERROR on failure.
@@ -3233,13 +3273,13 @@ sub WriteResultsText {
 #     - During test execution ("run") to prepare the workload config.
 #
 # INPUT:
-#     $caller       Logical caller name ("setup" or "run").
-#     $test         Test identifier (unused).
-#     $thread       Requested virtual user count; defaults to 1.
-#     $results_dir  Directory where the config file will be written.
+#     caller       Logical caller name ("setup" or "run").
+#     test         Test identifier (unused).
+#     thread       Requested virtual user count; defaults to 1.
+#     results_dir  Directory where the config file will be written.
 #
 # OUTPUT:
-#     - Writes tprocc_config.tcl into $results_dir.
+#     - Writes tprocc_config.tcl into results_dir.
 #     - Returns OK or ERROR.
 #
 # SIDE EFFECTS:
@@ -3258,23 +3298,43 @@ sub WriteTproccConfigFile {
 
     # Resolve requested thread count
     my $threads = $thread // 1;
-
+    
     #---------------------------------------------------------------------
     # Setup-time invariant:
-    # HammerDB schema builders must not exceed warehouse count.
-    # When caller eq "setup", force threads to warehouse count.
+    # HammerDB schema builders must not exceed:
+    #   - requested thread count
+    #   - warehouse count
+    #   - physical core count
+    # Use the minimum of the three.
     #---------------------------------------------------------------------
     if ($caller eq "setup") {
+
         my $wh = $tsState{warehouses} // 1;
 
-        if ($threads != $wh) {
-            PrintWarning($_wc.
-                " setup caller: forcing thread count from $threads to $wh. ".
-                "HammerDB schema build requires builder threads <= warehouses; ".
-                "override applies only during setup.");
+        # Contributed-by: Amrendra Kumar <amroo76@gmail.com>
+        # Rationale: Prevent HammerDB schema builder thread explosion on small hosts
+        # by enforcing physical core count as an upper bound during setup.
+    
+        # Determine physical core count
+        my $cores = 0;
+        if (open my $fh, '<', '/proc/cpuinfo') {
+            $cores++ while (<$fh>) =~ /processor/;
+            close $fh;
         }
 
-        $threads = $wh;
+        $cores = $cores || 1;   # fallback safety
+    
+        my $limit = $threads;
+        $limit = $wh    if $wh    < $limit;
+        $limit = $cores if $cores < $limit;
+    
+        if ($threads > $limit) {
+            PrintWarning($_wc.
+                " setup caller: forcing thread count from $threads to $limit. ".
+                "HammerDB schema build requires builder threads <= warehouses ".
+                "and <= physical cores; override applies only during setup.");
+            $threads = $limit;
+        }
     }
 
     my $db_type = lc($tsOpt{db_type} // '');
@@ -3283,7 +3343,10 @@ sub WriteTproccConfigFile {
     # Header
     #---------------------------------------------------------------------
     print $fh "# TPROCC Config (Generated by plugin)\n\n";
-    print $fh "dbset db $db_type\n";
+    # HammerDB's dbset prefix for postgres is "pg", not "postgres" (see
+    # client_source/hammerdb/HammerDB-6.0/config/database.xml) -- $db_type
+    # itself stays 'postgres' below for %conn/%dispatch lookups.
+    print $fh "dbset db " . ($db_type eq 'postgres' ? 'pg' : $db_type) . "\n";
     print $fh "dbset bm TPROC-C\n";
     print $fh "vuset vu $threads\n";
 
@@ -3315,38 +3378,6 @@ sub WriteTproccConfigFile {
     );
 
     my $c = $conn{$db_type};
-
-    #---------------------------------------------------------------------
-    # SSL (TAF is the single source of truth)
-    #---------------------------------------------------------------------
-    if ($options{db_ssl_mode} && $options{db_ssl_mode} ne 'off') {
-
-        if ($db_type eq 'maria' || $db_type eq 'mysql') {
-            print $fh "dbset ssl yes\n";
-            print $fh "dbset ssl_ca $options{db_ssl_ca}\n"     if $options{db_ssl_ca};
-            print $fh "dbset ssl_cert $options{db_ssl_cert}\n" if $options{db_ssl_cert};
-            print $fh "dbset ssl_key $options{db_ssl_key}\n"   if $options{db_ssl_key};
-            print $fh "dbset ssl_cipher $options{db_ssl_cipher}\n"
-                if $options{db_ssl_cipher};
-        }
-
-        elsif ($db_type eq 'postgres') {
-            print $fh "dbset sslmode $options{db_ssl_mode}\n";
-            print $fh "dbset sslrootcert $options{db_ssl_ca}\n" if $options{db_ssl_ca};
-            print $fh "dbset sslcert $options{db_ssl_cert}\n"   if $options{db_ssl_cert};
-            print $fh "dbset sslkey $options{db_ssl_key}\n"     if $options{db_ssl_key};
-        }
-
-        elsif ($db_type eq 'oracle') {
-            print $fh "dbset wallet $options{db_ssl_wallet}\n"
-                if $options{db_ssl_wallet};
-        }
-
-        elsif ($db_type eq 'mssql') {
-            print $fh "dbset encrypt yes\n";
-            print $fh "dbset trustservercertificate no\n";
-        }
-    }
 
     #---------------------------------------------------------------------
     # Dispatch to DB-specific config writer
@@ -3478,6 +3509,24 @@ sub WriteTproccMariaConfig {
     print $fh "diset tpcc maria_pass \"$options{db_user_pass}\"\n";
     print $fh "diset tpcc maria_dbase \"$options{database}\"\n";
     print $fh "diset tpcc maria_storage_engine $options{db_engine}\n";
+    #---------------------------------------------------------------------
+    # SSL for MariaDB (correct place)
+    #---------------------------------------------------------------------
+    if ($options{db_ssl_mode} && $options{db_ssl_mode} ne 'off') {
+
+        print $fh "diset connection maria_ssl true\n";
+        print $fh "diset connection maria_ssl_two_way false\n";
+        print $fh "diset connection maria_ssl_ca \"$options{db_ssl_ca}\"\n"
+          if $options{db_ssl_ca};
+        print $fh "diset connection maria_ssl_cert \"$options{db_ssl_cert}\"\n"
+          if $options{db_ssl_cert};
+        print $fh "diset connection maria_ssl_key \"$options{db_ssl_key}\"\n"
+          if $options{db_ssl_key};
+        print $fh "diset connection maria_ssl_cipher \"$options{db_ssl_cipher}\"\n"
+          if $options{db_ssl_cipher};
+	   print $fh "diset connection maria_ssl_linux_capath \"$options{db_ssl_linux_capath}\"\n"
+	      if $options{db_ssl_linux_capath};
+    }
 
     #---------------------------------------------------------------------
     # Common TPROCC options (generic keys mapped to maria_*)
@@ -3694,6 +3743,22 @@ sub WriteTproccMySQLConfig {
     print $fh "diset tpcc mysql_pass \"$options{db_user_pass}\"\n";
     print $fh "diset tpcc mysql_dbase \"$options{database}\"\n";
     print $fh "diset tpcc mysql_storage_engine $options{db_engine}\n";
+    
+    if ($options{db_ssl_mode} && $options{db_ssl_mode} ne 'off') {
+
+        print $fh "diset connection mysql_ssl_true\n";
+        print $fh "diset connection mysql_ssl_two_way false\n";
+        print $fh "diset connection mysql_ssl_ca \"$options{db_ssl_ca}\"\n"       
+            if $options{db_ssl_ca};
+        print $fh "diset connection mysql_ssl_cert \"$options{db_ssl_cert}\"\n"   
+            if $options{db_ssl_cert};
+        print $fh "diset connection mysql_ssl_key \"$options{db_ssl_key}\"\n"     
+            if $options{db_ssl_key};
+        print $fh "diset connection mysql_ssl_cipher \"$options{db_ssl_cipher}\"\n"
+            if $options{db_ssl_cipher};
+        print $fh "diset connection mysql_ssl_linux_capath \"$options{db_ssl_linux_capath}\"\n"
+               if $options{db_ssl_linux_capath};
+    }
 
     #---------------------------------------------------------------------
     # Common TPROCC options
@@ -3789,12 +3854,27 @@ sub WriteTproccPostgresConfig {
     #---------------------------------------------------------------------
     # Connection dictionary
     #---------------------------------------------------------------------
-    print $fh "diset connection pg_host \"$options{host}\"\n";
+    my $pg_host =
+        ($options{host} eq 'localhost') ? '127.0.0.1'
+                                        : $options{host};
+
+    print $fh "diset connection pg_host \"$pg_host\"\n";
     print $fh "diset connection pg_port $options{db_port}\n";
+
+    print $fh "diset tpcc pg_superuser \"$options{db_root_user}\"\n"
+        if $options{db_root_user};
+    print $fh "diset tpcc pg_superuserpass \"$options{db_root_pass}\"\n"
+        if $options{db_root_pass};
 
     print $fh "diset tpcc pg_user \"$options{db_user}\"\n";
     print $fh "diset tpcc pg_pass \"$options{db_user_pass}\"\n";
     print $fh "diset tpcc pg_dbase \"$options{database}\"\n";
+    
+    # SSL for PostgreSQL (HammerDB only supports sslmode)
+    if ($options{db_ssl_mode} && $options{db_ssl_mode} ne 'off') {
+       print $fh "diset connection pg_sslmode prefer\n";
+    }
+    
 
     #---------------------------------------------------------------------
     # Common TPROCC options
@@ -3889,6 +3969,123 @@ sub NormalizeDBType {
     return "postgres" if $t =~ /^(postgres|postgresql)$/;
 
     return $t;  # fallback for future engines
+}
+
+###############################################################################
+# HammerDB State Reset
+#
+# PURPOSE:
+#     Remove stale HammerDB internal SQLite databases before a new run.
+#     HammerDB uses these .db files at runtime when metric collectors are
+#     enabled (JSON and HTML). TAF consumes only the metrics produced during
+#     the current run and does not use historical HammerDB state.
+#
+# WHY:
+#     - Prevents schema conflicts across HammerDB versions (for example,
+#       upgrading from 5.0 to 6.0).
+#     - Ensures a clean environment for TPROC-C and TPROC-H workloads.
+#     - Reduces disk usage for production test setups.
+#     - Avoids contamination from previous runs.
+#
+# PROPERTIES:
+#     always_recreate_hammerdb_state
+#         Boolean. If true, remove all *.db files from hammerdb_state_dir
+#         before starting a test suite. Default: true.
+#
+#     hammerdb_state_dir
+#         Directory containing HammerDB internal SQLite databases.
+#         Default: /tmp/
+#
+# NOTES:
+#     - TAF extracts metrics from JSON and HTML only when collectors are
+#       enabled in the test suite properties. Collectors are off (false)
+#       by default.
+#     - Past HammerDB .db files are not used by TAF. Only the metrics
+#       generated during the current run are consumed.
+#     - Users who want HammerDB to retain historical test data should set
+#       default always_recreate_hammerdb_state to false. (both tproc c and h)
+###############################################################################
+sub ResetHammerdbState {
+
+    return unless $tsOpt{always_recreate_hammerdb_state};
+    
+    my $_reset = StageStart($_me." -> ResetHammerdbState ->");
+    PrintVerbose($_reset." Removing hammerdb state db's from ".$tsOpt{hammerdb_state_dir});
+
+    my $dir = $tsOpt{hammerdb_state_dir} // '/tmp/';
+    opendir(my $dh, $dir) or return;
+
+    while (my $f = readdir($dh)) {
+        next unless $f =~ /\.(db|DB)$/;
+        unlink("$dir/$f");
+    }
+
+    closedir($dh);
+    StageEnd($_reset);
+}
+
+#-----------------------------------------------------------------------------
+# ResolveClientCpuAffinity
+#
+# PURPOSE:
+#     Parse and validate the hammerdb_tprocc.client_cpu_affinity option.
+#     Supports comma-separated integers and ranges (e.g. 0-11,12-19).
+#     Stores the expanded CPU list back into tsOpt{client_cpu_affinity}.
+#
+# CONTRACT:
+#     - client_cpu_affinity may contain integers or ranges.
+#     - Empty or undefined means "no affinity applied".
+#
+# INPUT:
+#     tsOpt{client_cpu_affinity}
+#
+# OUTPUT:
+#     tsOpt{client_cpu_affinity} = [ list of CPU IDs ]
+#
+# RETURNS:
+#     OK or ERROR
+#-----------------------------------------------------------------------------
+sub ResolveClientCpuAffinity {
+    my ($contextTag) = @_;
+
+    # Option is optional
+    unless (defined $tsOpt{client_cpu_affinity}) {
+        PrintVerbose($contextTag . " No client_cpu_affinity specified.");
+        return OK;
+    }
+
+    my $val = $tsOpt{client_cpu_affinity};
+
+    # Validate basic pattern: digits, ranges, commas
+    unless ($val =~ /^(\d+(-\d+)?)(,(\d+(-\d+)?))*$/) {
+        PrintError($contextTag . " Invalid client_cpu_affinity value: $val. "
+            . "Must be integers or ranges, comma-separated.");
+        return ERROR;
+    }
+
+    my @cpus;
+
+    # Expand ranges and single integers
+    for my $chunk (split(/,/, $val)) {
+        if ($chunk =~ /^(\d+)-(\d+)$/) {
+            my ($start, $end) = ($1, $2);
+
+            if ($end < $start) {
+                PrintError($contextTag . " Invalid range in client_cpu_affinity: $chunk.");
+                return ERROR;
+            }
+
+            push @cpus, ($start .. $end);
+        } else {
+            push @cpus, int($chunk);
+        }
+    }
+
+    # Store expanded list back into tsOpt
+    $tsOpt{client_cpu_affinity} = \@cpus;
+
+    PrintVerbose($contextTag . " client_cpu_affinity expanded to: " . join(",", @cpus));
+    return OK;
 }
 
 #############################################################################

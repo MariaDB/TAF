@@ -276,6 +276,16 @@ Note: setup-client
                    : Skip TestSuiteCleanup.
                    : Default(false)
 
+   O = --test-case-tag=<type>
+   P = taf.test_case_tag=<type>
+                   : Free form tag for users to help describe the test run
+                   : Tag is printed into each test iteration's readme.txt
+                   : In addition, TAG is reported in many of the report plugins to incude 
+                   # if using TAF Backend, it is placed in the
+                   : test runs record's "tag" field for quering.
+                   : Example: MDEV1234_BASELINE, ISOLATION_RC_THREADPOOL, BIN_LOG_OFF
+                   : Default(null)
+
    O = --test-type=<type>
    P = taf.test_type=<type>
                    : Type of testing being done.
@@ -363,6 +373,7 @@ Note: setup-client
    P = taf.use_request_based={true/false}
                    : Convert duration into request count.
                    : Default(false)
+
    O = --exec-script-file-before-db-start=<path/to/script/file>
    P = taf.exec_script_file_before_db_start=<path/to/script/file>
                    : Execute standalone script before the database is started.
@@ -400,16 +411,18 @@ Note: setup-client
                    : Output is written to the first sub-results directory.
                    : Default(null)
 
-    O = --exec-sql-file-before-run-iter=<path/to/sql/file>
-    P = taf.exec_sql_file_before_run_iter=<path/to/sql/file>
-                   : Execute SQL file before each test iteration begins.
-                   : Output is written to the current iteration's sub-results directory.
+    O = --exec-script-file-before-tests=<path/to/script/file>
+    P = taf.exec_script_file_before_tests=<path/to/script/file>
+                   : Execute standalone script before the full test sequence begins.
+                   : Runs after database startup and TestSetup, but before any iterations.
+                   : Output is written to the main results directory.
                    : Default(null)
 
-    O = --exec-sql-file-after-run-iter=<path/to/sql/file>
-    P = taf.exec_sql_file_after_run_iter=<path/to/sql/file>
-                   : Execute SQL file after each test iteration completes.
-                   : Output is written to the current iteration's sub-results directory.
+    O = --exec-script-file-after-tests=<path/to/script/file>
+    P = taf.exec_script_file_after_tests=<path/to/script/file>
+                   : Execute standalone script after all test iterations have completed.
+                   : Runs after TestRun and TestFinish have fully completed.
+                   : Output is written to the main results directory.
                    : Default(null)
 
   {Database}
@@ -574,6 +587,11 @@ Note: setup-client
                    : Notes:
                    :   - This property controls authentication behavior only.
                    :   - It does not modify server configuration files.
+                   
+   O = --db-ssl-linux-capath=<path>
+   P = taf.db_ssl_linux_capath=<path>
+                   : Path to CA certificate file.
+
 
    ---------------------------------------------------------------------------
    SSL Enforcement Rules
@@ -659,10 +677,15 @@ Note: setup-client
                    : Show the active database software install.
 
    O = --db-software-install
-                   : Perform a direct database software install without
-                     requiring a properties file or TAF action.
+                   :Perform a direct database software install.
+                   :This mode OVERRIDES all other workflow controls:
+                   : - ignores --prop
+                   : - ignores --action
 
-             Requires:
+          Only the software install step will be executed.
+          TAF will exit immediately after installation.
+
+          Requires:
               --db-software-install-packages=/path/pkg1.rpm[,pkg2.rpm,...]
 
    O = --db-software-update-install
@@ -868,6 +891,15 @@ Note: setup-client
    P = taf.tools_debug={false/true}
                    : Enable debug output.
                    : Default(false)
+
+   O = --dump-run-state
+   P = taf.dump_run_state={false|true}
+                   : Enable dumping of the fully resolved TAF configuration.
+                   : Output is written to a text file.
+                   : Filename: taf_run_state_dump_YYYYMMDD_HHMMSS.txt
+                   : File is stored in reports directory during run, and archived with results.
+                   : Default(false)
+
 
    O = --help
                    : Print this usage.

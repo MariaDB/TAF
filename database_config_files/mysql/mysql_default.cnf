@@ -1,0 +1,138 @@
+# =============================================================================
+# mysql_default.cnf - MySQL Reference/Documentation Configuration
+#
+# Created: July 2026
+#
+# PURPOSE:
+#     Minimal-necessary starting point, documenting every setting also tuned
+#     by mysql_cache.cnf / mysql_simple_2gbp.cnf / mysql_tidesdb*.cnf.
+#     Every line below is commented out and carries the upstream MySQL 8.0
+#     default value plus a link to the reference documentation, so a reviewer
+#     can see at a glance what changes each of the other profiles makes
+#     relative to a stock server. Mirrors database_config_files/mariadb/
+#     mariadb_default.cnf so the two engines have a directly comparable
+#     "everything stock" baseline.
+#
+# TARGET VERSION:
+#     MySQL 8.0.x -- pinned by taf_run.sh's MYSQL_TARBALL_NAME if used.
+#     Default values below are taken from the MySQL 8.0 Reference Manual
+#     (https://dev.mysql.com/doc/refman/8.0/en/). MySQL defaults differ from
+#     MariaDB in several areas (character set, performance schema, redo log
+#     sizing, optimizer flags, and logging behavior). Verify against the
+#     MySQL manual for any setting before assuming a MariaDB or Percona
+#     default applies.
+#
+# USAGE:
+#     Point taf.db_config_file at this file for a plain, stock-defaults
+#     MySQL run -- i.e. the same role mariadb_default.cnf plays for
+#     sysbench_lua_pgsql.properties. It contributes NO active settings of its
+#     own (every line below is commented); the only non-stock values a
+#     benchmark run gets are the ones TAF forces regardless of db_config_file
+#     (see NOTES below).
+#     To run one of the tuned profiles instead, point taf.db_config_file at
+#     mysql_cache.cnf / mysql_simple_2gbp.cnf / mysql_tidesdb*.cnf.
+#     Diff this file against those to see exactly what each one overrides and
+#     by how much relative to a stock server.
+#
+# NOTES:
+#     - datadir, socket, log-error, and pid-file are always forced by TAF as
+#       explicit mysqld CLI flags after --defaults-file=<this file>
+#       (mysql.pm::_db_start_runtime_server). MySQL's CLI-over-config
+#       precedence means any datadir/socket/log-error/pid-file line in this
+#       file would be silently ignored, not merely overridden -- do not set
+#       them here.
+#     - port is NOT forced by TAF. Left unset here, the server uses the
+#       compiled-in MySQL default (3306). Set it explicitly in this file if a
+#       run needs a non-default port.
+#     - bind-address is left unset (MySQL default: listen on all interfaces),
+#       since none of the sibling profiles set it either.
+# =============================================================================
+
+[mysqld]
+
+# ---------------------------------------------------------------------------
+# "Mandatory" parameters
+#
+# MySQL 8.0 has built-in defaults for all my.cnf parameters. mysqld starts
+# correctly with an empty [mysqld] section, using compiled-in boot values.
+# Nothing below is a case of "no default exists"; the only two params in this
+# category are handled outside this file entirely:
+#
+#   - datadir  -- forced by TAF via --datadir=, not here.
+#   - socket   -- forced by TAF via --socket=, not here.
+#
+# If you want to designate a tunable as mandatory-with-no-safe-default for a
+# *new* profile (e.g. innodb_buffer_pool_size sized to a specific host's RAM),
+# leave a TODO here and decide the value per-host:
+#
+#   TODO(you): any profile-specific "must be set explicitly" parameter goes here.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Memory
+# Reference: https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html
+# Reference: https://dev.mysql.com/doc/refman/8.0/en/innodb-parameters.html
+# ---------------------------------------------------------------------------
+#innodb_buffer_pool_size        = 128M     # MySQL 8.0 default
+#innodb_buffer_pool_instances   = 1        # MySQL default when buffer pool < 1GB; auto-scales above that
+#key_buffer_size                = 8M       # MySQL default (MyISAM key cache; largely unused with InnoDB)
+#sort_buffer_size               = 262144   # MySQL default (256K; per-connection)
+#join_buffer_size               = 262144   # MySQL default (256K; per-connection)
+#tmp_table_size                 = 16M      # MySQL default
+#max_heap_table_size            = 16M      # MySQL default
+
+# ---------------------------------------------------------------------------
+# InnoDB Durability / Redo Log
+# Reference: https://dev.mysql.com/doc/refman/8.0/en/innodb-parameters.html
+# ---------------------------------------------------------------------------
+#innodb_flush_log_at_trx_commit = 1        # MySQL default (full ACID durability)
+#innodb_log_file_size           = 50331648 # MySQL default (48MB; MySQL uses log_file_size, not MariaDB's redo_log_capacity)
+#innodb_log_files_in_group      = 2        # MySQL default
+#innodb_doublewrite             = ON       # MySQL default
+#innodb_flush_method            = fsync    # MySQL default
+#sync_binlog                    = 1        # MySQL default when binary logging enabled; log-bin is OFF by default
+#log_bin                        = OFF      # MySQL default (binlog disabled unless explicitly configured)
+
+# ---------------------------------------------------------------------------
+# I/O
+# Reference: https://dev.mysql.com/doc/refman/8.0/en/innodb-parameters.html
+# ---------------------------------------------------------------------------
+#innodb_io_capacity             = 200      # MySQL default
+#innodb_io_capacity_max         = 2000     # MySQL default
+#innodb_read_io_threads         = 4        # MySQL default
+#innodb_write_io_threads        = 4        # MySQL default
+#innodb_file_per_table          = ON       # MySQL default
+
+# ---------------------------------------------------------------------------
+# Connections / Caching
+# Reference: https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html
+# ---------------------------------------------------------------------------
+#max_connections                = 151      # MySQL default
+#table_open_cache               = 2000     # MySQL default
+#thread_cache_size              = 10       # MySQL default (autosized; differs from MariaDB's -1)
+#thread_handling                = one-thread-per-connection  # MySQL default
+#open_files_limit               = 0        # MySQL default (0 = use OS/ulimit)
+
+# ---------------------------------------------------------------------------
+# Optimizer
+# Reference: https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html#sysvar_optimizer_switch
+# ---------------------------------------------------------------------------
+#optimizer_switch               = <version-default flag set>  # MySQL default; see manual for full flag list
+#innodb_stats_on_metadata       = OFF      # MySQL default (same as MariaDB)
+#innodb_autoinc_lock_mode       = 2        # MySQL default (interleaved)
+
+# ---------------------------------------------------------------------------
+# Logging
+# Reference: https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html
+# ---------------------------------------------------------------------------
+#general_log                    = OFF      # MySQL default
+#slow_query_log                 = OFF      # MySQL default
+#log_error                      = <unset>  # forced by TAF via --log-error=, not here
+#performance_schema             = ON       # MySQL default (differs from MariaDB, which defaults OFF)
+
+# ---------------------------------------------------------------------------
+# Character Set / Collation
+# Reference: https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html
+# ---------------------------------------------------------------------------
+#character_set_server           = utf8mb4               # MySQL default
+#collation_server               = utf8mb4_0900_ai_ci    # MySQL default (differs from MariaDB's UCA collation)

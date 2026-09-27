@@ -3,7 +3,7 @@ package TAF::DatabaseSoftwareInstalls;
 # TAF::DatabaseSoftwareInstalls
 #
 # Created: Nov 2025
-# Last Modified: May 2026
+# Last Modified: September 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -81,6 +81,7 @@ package TAF::DatabaseSoftwareInstalls;
 #     - Runtime DB lifecycle management is intentionally out of scope and
 #       belongs in suite-specific or plugin-specific modules.
 #############################################################################
+our $VERSION = '4.0';
 #===============================================================================
 #                                Imports
 #===============================================================================
@@ -119,9 +120,9 @@ use TAF::Logging qw(PrintError
 use TAF::Utilities qw(PluginAliases PluginBinPriority);
 require toolsLib;
 
-use constant TAF_DBSI => 'TAF::DatabaseSoftwareInstalls -> ';
-our $VERSION = '2.6';
-
+#===============================================================================
+#                           Internal Vars
+#===============================================================================
 # Local working state for install/update operations
 # This is NOT part of the TAF context and must never be persisted.
 my %install_state;
@@ -149,6 +150,8 @@ use constant {
     ZERO   => 0,
     UNDEF  => undef,
 };
+
+use constant TAF_DBSI => 'TAF::DatabaseSoftwareInstalls -> ';
 
 #===============================================================================
 #                   Database Software Install Functions
@@ -210,7 +213,7 @@ sub ChooseActiveDatabaseSoftwareInstall {
     # Get installs
     my @installs = _GetListOfInstalls($ctx);
     if (!@installs) {
-        Print("WARNING No installs found under $dirs_ref->{db_installs_root_dir}");
+        Print(TAF_DBSI."ERROR: No installs found under $dirs_ref->{db_installs_root_dir}");
         return ERROR;
     }
 
@@ -246,13 +249,13 @@ sub ChooseActiveDatabaseSoftwareInstall {
         # Parse selection
         my @sel = _ParseSelection($input, scalar(@installs));
         if (@sel != 1) {
-            Print("ERROR: Please select exactly one install.");
+            Print(TAF_DBSI."ERROR: Please select exactly one install.");
             next;
         }
 
         my $idx = $sel[0];
         if ($idx < 1 || $idx > @installs) {
-            Print("ERROR: Selection out of range");
+            Print(TAF_DBSI."ERROR: Selection out of range");
             next;
         }
 
@@ -264,7 +267,7 @@ sub ChooseActiveDatabaseSoftwareInstall {
             return OK;
         }
 
-        Print("ERROR: Failed to update active pointer.");
+        Print(TAF_DBSI."ERROR: Failed to update active pointer.");
     }
 }
 
@@ -336,19 +339,28 @@ sub DoInstall {
     my $root_dir = $ctx->{dirs}{db_installs_root_dir};
     my $pkgs     = $ctx->{options}{db_software_install_packages};
     
-    # Normalize to arrayref
-    $pkgs = [$pkgs] unless ref $pkgs eq 'ARRAY';
+    # Restore original behavior: split comma-separated scalar into arrayref
+    if (ref $pkgs eq 'ARRAY') {
+        # already an arrayref
+    } else {
+        my @list = split(/\s*,\s*/, $pkgs);
+        $pkgs = \@list;
+    }
     
     # Now declare @pkgs properly
     my @pkgs = @$pkgs;
     
     # Determine the install directory name exactly as the pipeline will create it
     my $base_pkg = _SelectBasePackage(\@pkgs);
+    if (!defined $base_pkg || $base_pkg eq '') {
+        PrintError("Install failed: invalid or missing package path.");
+        return ERROR;
+    }
     my $install_dir_name = basename($base_pkg);
     $install_dir_name =~ s/\.(tar\.gz|tgz|tar\.xz|tar\.bz2|tar|rpm|deb|zip)$//i;
     
     if (!defined $install_dir_name) {
-        PrintError("Unable to determine install directory name from packages");
+        PrintError(TAF_DBSI."Unable to determine install directory name from packages");
         return ERROR;
     }
 
@@ -356,7 +368,7 @@ sub DoInstall {
     
     if (-d $final_install_path) {
         Print("");
-        Print("\tERROR: Install directory already exists: $final_install_path");
+        Print(TAF_DBSI."ERROR: Install directory already exists: $final_install_path");
         Print("");
         Print("\tRefusing to install.");
         Print("");
@@ -376,7 +388,7 @@ sub DoInstall {
     # Validations (package list + existence)
     my @packages = _PerformInstallValidations($ctx);
     if (!@packages) {
-        PrintError("Install failed: package validation did not return any packages");
+        PrintError(TAF_DBSI."Install failed: package validation did not return any packages");
         return ERROR;
     }
 
@@ -386,7 +398,7 @@ sub DoInstall {
     if (!(defined $stage_dir && -d $stage_dir &&
           defined $install_root && -d $install_root)) {
 
-        PrintError("Install failed: extraction phase did not produce a valid install_root");
+        PrintError(TAF_DBSI."Install failed: extraction phase did not produce a valid install_root");
 
         # Best-effort cleanup of staging directory
         if (defined $stage_dir && -d $stage_dir) {
@@ -403,7 +415,7 @@ sub DoInstall {
     if (defined $stage_dir && -d $stage_dir) {
         my $clean_rc = _CleanupTempUnpackDir($ctx, $stage_dir);
         if ($clean_rc != OK) {
-            PrintError("Install warning: temporary staging directory could not be fully cleaned up");
+            PrintError(TAF_DBSI."Install warning: temporary staging directory could not be fully cleaned up");
         }
     }
 
@@ -578,6 +590,15 @@ sub ResolveAndValidateInstall {
         $files_ref->{active_install},
         $options_ref->{verbose}
     );
+
+    # Remove Unicode corruption 
+    $install_dir = _ResolveActiveInstall(
+        $options_ref->{db_software_install_dir},
+        $files_ref->{active_install},
+        $options_ref->{verbose}
+    );
+    
+    $options_ref->{db_software_install_dir} = $install_dir;
 
     # If resolution failed, log and return ERROR (do not die)
     if (!defined $install_dir) {
@@ -824,9 +845,9 @@ sub _ResolveActiveInstall {
         # not user intent. Do NOT update the marker.
         if (defined $current_active &&
             $install_dir eq $current_active) {
-            PrintVerbose("Current install directory     =  $install_dir");
-            PrintVerbose("Current active install marker =  $current_active");
-            PrintVerbose("Install and Active Marker match; treating as implicit");
+            PrintVerbose(TAF_DBSI."Current install directory     =  $install_dir");
+            PrintVerbose(TAF_DBSI."Current active install marker =  $current_active");
+            PrintVerbose(TAF_DBSI."Install and Active Marker match; treating as implicit");
             return $install_dir;
         }
 
@@ -1081,9 +1102,9 @@ sub _ResolveInstallType {
 
     # Log result of inference
     if (defined $type) {
-        PrintVerbose("Returning installed database software maker: $type");
+        PrintVerbose(TAF_DBSI."Returning installed database software maker: $type");
     } else {
-        PrintWarning("No install type could be resolved");
+        PrintWarning(TAF_DBSI."No install type could be resolved");
     }
 
     # End stage and return inferred type (or undef)
@@ -2234,62 +2255,79 @@ sub _ValidateEachPackageExists {
 # _UnpackBasePackage
 #
 # PURPOSE:
-#     Extract the base (first) install package into a temporary staging root.
-#     This performs the initial extraction phase of the install lifecycle.
+#     Extract the selected base install package into the staging root.
+#     This performs the first phase of the install lifecycle: raw extraction.
+#
+# IMPORTANT:
+#     This routine ONLY extracts the base package.
+#     It does NOT:
+#       - detect the install root,
+#       - collapse wrapper directories,
+#       - normalize usr/ layouts,
+#       - merge layered packages.
+#
+#     All structural normalization is performed later by:
+#       - _UnpackLayeredPackages
+#       - _NormalizeUsrLayout
 #
 # PARAMETERS:
 #     $ctx
 #         Context containing options.tools_debug.
 #
-#     $tmp_unpack
-#         Temporary directory used as the staging root.
+#     $stage_root
+#         Temporary staging directory created by _CreateTempStagingDir.
 #
-#     $packages_ref_or_scalar
-#         EITHER:
-#           - Arrayref of package paths; OR
-#           - Single package path (scalar).
-#         This routine normalizes to an arrayref before selecting the base.
+#     $packages_ref
+#         Arrayref of package paths. The base package is selected via
+#         _SelectBasePackage().
 #
 # RETURNS:
-#     <string>  - Staging root directory path.
-#     UNDEF     - Extraction failed or staging root invalid.
+#     <string>  - Directory where the base package was extracted (stage_root/base).
+#     UNDEF     - Extraction failed or staging directory invalid.
 #===============================================================================
 sub _UnpackBasePackage {
-    my ($ctx, $tmp_unpack, $packages_ref_or_scalar) = @_;
+    my ($ctx, $stage_root, $packages_ref) = @_;
 
-    my $options = $ctx->{options};
-    my $debug   = $options->{tools_debug} || 0;
-    my $di      = StageStart(TAF_DBSI."_UnpackBasePackage ->");
+    my @packages = @$packages_ref;
 
-    # Normalize input to an arrayref, regardless of caller behavior
-    my @pkgs =
-        ref($packages_ref_or_scalar) eq 'ARRAY'
-            ? @$packages_ref_or_scalar
-            : ($packages_ref_or_scalar);
-
-    my $packages_ref = \@pkgs;
-
-    # Select the base package deterministically (bundle/server/client)
     my $base_pkg = _SelectBasePackage($packages_ref);
-
     if (!defined $base_pkg) {
-        PrintError($di."Failed to select base package");
-        toolsLib::RemoveTree($tmp_unpack, 10, $debug);
-        return;
+        PrintError("_UnpackBasePackage -> ERROR: No base package selected");
+        return undef;
     }
 
-    PrintVerbose($di."Unpacking base package: $base_pkg");
+    PrintVerbose("_UnpackBasePackage -> base package: $base_pkg");
 
-    my $rc = toolsLib::ExtractArchive($tmp_unpack, $base_pkg, $debug, 'base');
+    my $target_dir = File::Spec->catdir($stage_root, "base");
+    File::Path::make_path($target_dir);
 
-    if (!($rc && -d $tmp_unpack)) {
-        PrintError($di."Failed to unpack base package: $base_pkg");
-        toolsLib::RemoveTree($tmp_unpack, 10, $debug);
-        return;
+    if ($base_pkg =~ /\.(tar|tgz|tar\.gz|tar\.xz|txz|tar\.bz2)$/i) {
+        system("tar -xf '$base_pkg' -C '$target_dir'") == 0
+            or do { PrintError("_UnpackBasePackage -> ERROR: tar extraction failed"); return undef; };
+    }
+    elsif ($base_pkg =~ /\.rpm$/i) {
+        system("rpm2cpio '$base_pkg' | (cd '$target_dir' && cpio -idmv)") == 0
+            or do { PrintError("_UnpackBasePackage -> ERROR: rpm extraction failed"); return undef; };
+    }
+    elsif ($base_pkg =~ /\.deb$/i) {
+        system("dpkg-deb -x '$base_pkg' '$target_dir'") == 0
+            or do { PrintError("_UnpackBasePackage -> ERROR: deb extraction failed"); return undef; };
+    }
+    elsif ($base_pkg =~ /\.zip$/i) {
+        system("unzip -q '$base_pkg' -d '$target_dir'") == 0
+            or do { PrintError("_UnpackBasePackage -> ERROR: zip extraction failed"); return undef; };
+    }
+    else {
+        PrintError("_UnpackBasePackage -> ERROR: Unsupported package type: $base_pkg");
+        return undef;
     }
 
-    StageEnd($di);
-    return $tmp_unpack;
+    # IMPORTANT:
+    # Do NOT detect install root here.
+    # Do NOT collapse wrapper dirs here.
+    # Do NOT add new subs here.
+    # _UnpackLayeredPackages + _NormalizeUsrLayout already do all of that.
+    return $target_dir;
 }
 
 #===============================================================================
@@ -2790,9 +2828,7 @@ sub _NormalizeUsrLayout {
                     if $debug;
 
                 my $rc = _MoveUsrSubdir($product_dir, $install_root, $debug);
-                if ($rc != OK) {
-                    return ERROR;
-                }
+                return ERROR if $rc != OK;
 
                 File::Path::remove_tree($usr);
                 return OK;
@@ -2813,16 +2849,39 @@ sub _NormalizeUsrLayout {
 
     for my $e (@usr_entries) {
         my $path = File::Spec->catdir($usr, $e);
+        next unless -d $path;
 
-        if (-d $path && ($e eq 'bin' || $e eq 'lib' || $e eq 'share' || $e eq 'include')) {
-            PrintVerbose("_NormalizeUsrLayout -> Moving usr/$e into install_root") if $debug;
-
-            my $rc = _MoveUsrSubdir($path, $install_root, $debug);
-            if ($rc != OK) {
-                return ERROR;
-            }
+        # PostgreSQL EL9: usr/lib64 → install_root/lib64
+        if ($e eq 'lib64') {
+            PrintVerbose("_NormalizeUsrLayout -> Moving usr/lib64 into install_root/lib64") if $debug;
+            my $target = File::Spec->catdir($install_root, 'lib64');
+            my $rc = _MoveUsrSubdir($path, $target, $debug);
+            return ERROR if $rc != OK;
+            next;
         }
+
+        # PostgreSQL EL9: usr/lib → install_root (merge lib)
+        if ($e eq 'lib') {
+            PrintVerbose("_NormalizeUsrLayout -> Moving usr/lib into install_root (merge lib)") if $debug;
+            my $rc = _MoveUsrSubdir($path, $install_root, $debug);
+            return ERROR if $rc != OK;
+            next;
+        }
+
+        # Standard dirs: bin/share/include → install_root
+        if ($e eq 'bin' || $e eq 'share' || $e eq 'include') {
+            PrintVerbose("_NormalizeUsrLayout -> Moving usr/$e into install_root") if $debug;
+            my $rc = _MoveUsrSubdir($path, $install_root, $debug);
+            return ERROR if $rc != OK;
+            next;
+        }
+
+        # Fallback: flatten any other usr/<subdir> into install_root
+        PrintVerbose("_NormalizeUsrLayout -> Flattening usr/$e into install_root") if $debug;
+        my $rc = _MoveUsrSubdir($path, $install_root, $debug);
+        return ERROR if $rc != OK;
     }
+
 
     # Remove usr if empty
     opendir(my $dh3, $usr) or return OK;
@@ -2918,6 +2977,35 @@ sub _MoveUsrSubdir {
     }
 
     File::Path::remove_tree($src);
+
+    # FINAL BLUNT FIX: if we ended up with lib/lib under this install_root, flatten it.
+    my $lib_dir  = File::Spec->catdir($install_root, 'lib');
+    my $inner_lib = File::Spec->catdir($lib_dir, 'lib');
+
+    if (-d $lib_dir && -d $inner_lib) {
+        PrintVerbose("_MoveUsrSubdir -> Flattening nested lib/lib under $install_root") if $debug;
+
+        opendir(my $ldh, $inner_lib) or do {
+            PrintError("_MoveUsrSubdir -> ERROR: Unable to open $inner_lib");
+            return ERROR;
+        };
+
+        my @lib_entries = grep { $_ ne '.' && $_ ne '..' } readdir($ldh);
+        closedir($ldh);
+
+        for my $e (@lib_entries) {
+            my $src_path = File::Spec->catfile($inner_lib, $e);
+            my $dst_path = File::Spec->catfile($lib_dir, $e);
+
+            if (!rename($src_path, $dst_path)) {
+                PrintError("_MoveUsrSubdir -> ERROR: Failed to rename $src_path -> $dst_path: $!");
+                return ERROR;
+            }
+        }
+
+        File::Path::remove_tree($inner_lib);
+    }
+
     return OK;
 }
 
@@ -4201,48 +4289,77 @@ sub _RpmContainsUsrLayout {
 #
 # PURPOSE:
 #     Determine the correct "base" package from a list of install packages.
-#     The base package is the one that contains the root filesystem layout for
-#     the database install. Detection is maker-agnostic and based entirely on
-#     package contents rather than vendor names or RPM conventions.
+#     Selection is content-based and maker-agnostic. The base package is the
+#     one whose contents indicate it provides a usable database server or
+#     client filesystem tree.
 #
 # PARAMETERS:
 #     $packages_ref
 #         Arrayref of package paths.
 #
 # BEHAVIOR:
-#     - If a bundle (tar/tgz) is present, it is always selected as the base.
-#     - Otherwise, search for a server-capable package:
-#           * Contains a known server binary (mysqld, mariadbd, postgres,
-#             postmaster, sqlplus).
-#     - If no server package is found, search for a client-capable package:
-#           * Contains a known client binary (mysql, psql).
-#           * AND contains a known client library (libmysqlclient, libpq).
-#     - If neither server nor client packages qualify, return undef.
+#     - Validate that each package path exists and is readable.
+#
+#     - Prefer tarball bundles (tar/tgz/tar.gz/tar.xz/txz/tar.bz2) when present.
+#       These are treated as full filesystem bundles and always win.
+#
+#     - Otherwise, inspect package contents (rpm, tar, deb) WITHOUT extraction:
+#           * rpm2cpio | cpio -t
+#           * tar -tf
+#           * dpkg-deb -c
+#
+#     - Server-capable detection:
+#           A package is considered server-capable if it contains ANY of:
+#               mysqld, mariadbd, postgres, postmaster, sqlplus
+#           Matching is end-of-path (…/postgres), not prefix-based.
+#
+#     - Client-capable detection:
+#           A package is considered client-capable if it contains BOTH:
+#               - A known client binary (mysql, psql)
+#               - A known client library (libmysqlclient, libpq)
+#
+#     - PostgreSQL fallback detection:
+#           If no server/client package is found, but the package contains
+#           postgres, postmaster, or psql anywhere in its file list, it is
+#           selected as the base. This supports custom PG tarballs and
+#           nonstandard packaging layouts.
+#
+#     - If no package qualifies under any rule, return undef and emit an error.
 #
 # RETURNS:
 #     <string>  - Path to the selected base package.
 #     undef     - No valid base package could be determined.
 #
 # NOTES:
-#     - Content-based detection only; rpm2cpio or tar listing is used to
-#       inspect package contents without extraction.
-#     - No vendor-specific logic is used.
-#     - No silent fallbacks are permitted; failure is explicit.
+#     - Detection is strictly content-based; no vendor naming assumptions.
+#     - No silent fallbacks: failure is explicit.
+#     - Supports rpm, tarball, and deb package inspection.
 #===============================================================================
 sub _SelectBasePackage {
     my ($packages_ref) = @_;
 
     my @packages = @$packages_ref;
 
-    # Bundle detection: outer tar files only
+    # Validate all package paths before processing
     for my $pkg (@packages) {
-        if ($pkg =~ /\.(tar|tgz|tar\.gz)$/) {
-            #PrintVerbose("_SelectBasePackage -> bundle detected: $pkg");
+        if (!defined($pkg) || $pkg eq '' || !-f $pkg) {
+            PrintError("_SelectBasePackage -> invalid or missing package path: $pkg");
+            return undef;
+        }
+    }
+
+    #------------------------------------------------------------
+    # 1. Bundle detection: tarballs always win (existing behavior)
+    #------------------------------------------------------------
+    for my $pkg (@packages) {
+        if ($pkg =~ /\.(tar|tgz|tar\.gz|tar\.xz|txz|tar\.bz2)$/i) {
             return $pkg;
         }
     }
 
-    # Known server binaries
+    #------------------------------------------------------------
+    # 2. Known server/client binaries
+    #------------------------------------------------------------
     my @server_bins = (
         'mysqld',
         'mariadbd',
@@ -4251,50 +4368,55 @@ sub _SelectBasePackage {
         'sqlplus'
     );
 
-    # Known client binaries
     my @client_bins = (
         'mysql',
         'psql'
     );
 
-    # Known client libraries
     my @client_libs = (
         'libmysqlclient',
         'libpq'
     );
 
-    # Helper: list contents of a package without extracting
+    #------------------------------------------------------------
+    # 3. Helper: list contents of a package without extracting
+    #------------------------------------------------------------
     my $list_pkg = sub {
         my ($pkg) = @_;
         my @files;
 
-        if ($pkg =~ /\.rpm$/) {
+        if ($pkg =~ /\.rpm$/i) {
             @files = `rpm2cpio '$pkg' | cpio -t 2>/dev/null`;
         }
-        elsif ($pkg =~ /\.(tar|tgz|tar\.gz)$/) {
+        elsif ($pkg =~ /\.(tar|tgz|tar\.gz|tar\.xz|txz|tar\.bz2)$/i) {
             @files = `tar -tf '$pkg' 2>/dev/null`;
         }
-        elsif ($pkg =~ /\.(tar\.xz|txz|xz)$/) {
-            @files = `tar -tf '$pkg' 2>/dev/null`;
+        elsif ($pkg =~ /\.deb$/i) {
+            @files = `dpkg-deb -c '$pkg' 2>/dev/null`;
         }
 
         chomp @files;
         return @files;
     };
 
-    # Search for server-capable package
+    #------------------------------------------------------------
+    # 4. Server-capable package detection (loosened regex)
+    #------------------------------------------------------------
     for my $pkg (@packages) {
         my @files = $list_pkg->($pkg);
 
         for my $bin (@server_bins) {
-            if (grep { /\/$bin$/ } @files) {
+            # Match end-of-path, regardless of leading slash
+            if (grep { /(^|\/)$bin$/ } @files) {
                 PrintVerbose("_SelectBasePackage -> server-capable package: $pkg (found $bin)");
                 return $pkg;
             }
         }
     }
 
-    # Search for client-capable package
+    #------------------------------------------------------------
+    # 5. Client-capable package detection
+    #------------------------------------------------------------
     for my $pkg (@packages) {
         my @files = $list_pkg->($pkg);
 
@@ -4302,7 +4424,7 @@ sub _SelectBasePackage {
         my $has_client_lib = 0;
 
         for my $bin (@client_bins) {
-            if (grep { /\/$bin$/ } @files) {
+            if (grep { /(^|\/)$bin$/ } @files) {
                 $has_client_bin = 1;
             }
         }
@@ -4319,7 +4441,25 @@ sub _SelectBasePackage {
         }
     }
 
-    # No valid base package found
+    #------------------------------------------------------------
+    # 6. PostgreSQL fallback detection
+    #    (handles custom tarballs and custom installs)
+    #------------------------------------------------------------
+    for my $pkg (@packages) {
+        my @files = $list_pkg->($pkg);
+
+        if (grep { /(^|\/)postgres$/ } @files ||
+            grep { /(^|\/)postmaster$/ } @files ||
+            grep { /(^|\/)psql$/ } @files) {
+
+            PrintVerbose("_SelectBasePackage -> PG fallback detection: $pkg");
+            return $pkg;
+        }
+    }
+
+    #------------------------------------------------------------
+    # 7. No valid base package found
+    #------------------------------------------------------------
     PrintError("_SelectBasePackage -> ERROR: No server or client capable package found.");
     PrintVerbose("A valid install requires at least one server-capable or client-capable package.");
     return undef;

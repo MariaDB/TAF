@@ -1,5 +1,7 @@
 package taf.backend.parser;
 
+import java.util.Map;
+import java.util.LinkedHashMap;
 import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.Timestamp;
@@ -61,151 +63,153 @@ public class DbIngest {
 	 // ------------------------------------------------------------
 	 // Insert test run (updated for expanded test_run schema)
 	 // ------------------------------------------------------------
-	 public static long insertTestRun(ParsedTestRun tr, long systemId, long configId) throws Exception {
-	
-	     tr.systemId = systemId;
-	     tr.configId = configId;
-	
-	     try (Connection conn = Db.getConnection()) {
-	
-	         CallableStatement cs = conn.prepareCall(
-	             "{ call insert_test_run(" +
-	             // 8 params: test_name .. client_version
-	             "?,?,?,?,?,?,?,?," +
-	             // 9 params: db_maker .. database_under_test
-	             "?,?,?,?,?,?,?,?,?," +
-	             // 2 params: config_id, is_baseline
-	             "?,?," +
-	             // 4 params: pct_warning .. pct_duration_drift
-	             "?,?,?,?," +
-	             // 2 params: test_type, comments
-	             "?,?," +
-	             // 3 params: test_timestamp, test_end_time, test_duration
-	             "?,?,?," +
-	             // 2 params: warmup_threads, warmup_duration
-	             "?,?," +
-	             // 5 params: test_suite_revision .. range_size
-	             "?,?,?,?,?," +
-	             // 2 params: connector, thread_list
-	             "?,?," +
-	             // 1 param: metadata
-	             "?," +
-	             // 2 OUT params: test_run_id, reject_reason
-	             "?,?" +
-	         ") }"
-	     );
-	
-	     int i = 1;
-	
-	     cs.setString(i++, tr.testName);
-	     cs.setLong(i++, systemId);
-	     cs.setString(i++, tr.tafHarnessName);
-	     cs.setString(i++, tr.tafHarnessVersion);
-	     cs.setString(i++, tr.suiteName);
-	     cs.setString(i++, tr.suiteVersion);
-	     cs.setString(i++, tr.clientProgram);
-	     cs.setString(i++, tr.clientVersion);
-	
-	     cs.setString(i++, tr.dbMaker);
-	     cs.setString(i++, tr.dbEngine);
-	     cs.setString(i++, tr.dbVersion);
-	     cs.setString(i++, tr.dbUser);
-	     cs.setString(i++, tr.dbRootUser);
-	     cs.setString(i++, tr.dbInstallDir);
-	
-	     if (tr.dbPort != null)
-	         cs.setInt(i++, tr.dbPort);
-	     else
-	         cs.setNull(i++, Types.INTEGER);
-	
-	     cs.setString(i++, tr.dbSocket);
-	     cs.setString(i++, tr.databaseUnderTest);
-	
-	     cs.setLong(i++, configId);
-	     cs.setBoolean(i++, tr.isBaseline);
-	
-	     if (tr.pctWarning != null)
-	         cs.setInt(i++, tr.pctWarning);
-	     else
-	         cs.setNull(i++, Types.INTEGER);
-	
-	     if (tr.pctFail != null)
-	         cs.setInt(i++, tr.pctFail);
-	     else
-	         cs.setNull(i++, Types.INTEGER);
-	
-	     if (tr.pctGain != null)
-	         cs.setInt(i++, tr.pctGain);
-	     else
-	         cs.setNull(i++, Types.INTEGER);
-	
-	     if (tr.pctDurationDrift != null)
-	         cs.setInt(i++, tr.pctDurationDrift);
-	     else
-	         cs.setNull(i++, Types.INTEGER);
-	
-	     cs.setString(i++, tr.testType);
-	     cs.setString(i++, tr.comments);
-	
-	     cs.setTimestamp(i++, Timestamp.valueOf(tr.testTimestamp));
-	
-	     if (tr.testEndTime != null)
-	         cs.setTimestamp(i++, Timestamp.valueOf(tr.testEndTime));
-	     else
-	         cs.setNull(i++, Types.TIMESTAMP);
-	
-	     if (tr.testDuration != null)
-	         cs.setInt(i++, tr.testDuration);
-	     else
-	         cs.setNull(i++, Types.INTEGER);
-	
-	     if (tr.warmupThreads != null)
-	         cs.setInt(i++, tr.warmupThreads);
-	     else
-	         cs.setNull(i++, Types.INTEGER);
-	
-	     if (tr.warmupDuration != null)
-	         cs.setInt(i++, tr.warmupDuration);
-	     else
-	         cs.setNull(i++, Types.INTEGER);
-	
-	     if (tr.testSuiteRevision != null)
-	         cs.setInt(i++, tr.testSuiteRevision);
-	     else
-	         cs.setNull(i++, Types.INTEGER);
-	
-	     cs.setString(i++, tr.testSuitePmFile);
-	
-	     if (tr.numberOfRows != null)
-	         cs.setInt(i++, tr.numberOfRows);
-	     else
-	         cs.setNull(i++, Types.INTEGER);
-	
-	     if (tr.numberOfTables != null)
-	         cs.setInt(i++, tr.numberOfTables);
-	     else
-	         cs.setNull(i++, Types.INTEGER);
-	
-	     if (tr.rangeSize != null)
-	         cs.setInt(i++, tr.rangeSize);
-	     else
-	         cs.setNull(i++, Types.INTEGER);
-	
-	     cs.setString(i++, tr.connector);
-	     cs.setString(i++, tr.threadList);
-	
-	     cs.setString(i++, tr.metadata != null ? JsonUtil.toJson(tr.metadata) : "{}");
-	
-	         cs.registerOutParameter(i++, Types.BIGINT);
-	         cs.registerOutParameter(i++, Types.VARCHAR);
-	
-	         cs.execute();
-	
-	         return cs.getLong(i - 2);
-	     }
-	 }
+    public static long insertTestRun(ParsedTestRun tr, long systemId, long configId) throws Exception {
 
+        tr.systemId = systemId;
+        tr.configId = configId;
 
+        try (Connection conn = Db.getConnection()) {
+
+            CallableStatement cs = conn.prepareCall(
+                "{ call insert_test_run(" +
+                // 1–8: test_name .. client_version
+                "?,?,?,?,?,?,?,?," +
+                // 9–17: db_maker .. database_under_test
+                "?,?,?,?,?,?,?,?,?," +
+                // 18: config_id
+                "?," +
+                // 19–25: NEW fields (tagging + properties + provenance)
+                "?,?,?,?,?,?,?," +
+                // 26: is_baseline
+                "?," +
+                // 27–30: pct_warning .. pct_duration_drift
+                "?,?,?,?," +
+                // 31–32: test_type, comments
+                "?,?," +
+                // 33–35: test_timestamp, test_end_time, test_duration
+                "?,?,?," +
+                // 36–37: warmup_threads, warmup_duration
+                "?,?," +
+                // 38–42: test_suite_revision .. range_size
+                "?,?,?,?,?," +
+                // 43–44: connector, thread_list
+                "?,?," +
+                // 45: metadata
+                "?," +
+                // 46–47: OUT params
+                "?,?" +
+                ") }"
+            );
+
+            int i = 1;
+
+            // 1–8: core identity
+            cs.setString(i++, tr.testName);
+            cs.setLong(i++, systemId);
+            cs.setString(i++, tr.tafHarnessName);
+            cs.setString(i++, tr.tafHarnessVersion);
+            cs.setString(i++, tr.suiteName);
+            cs.setString(i++, tr.suiteVersion);
+            cs.setString(i++, tr.clientProgram);
+            cs.setString(i++, tr.clientVersion);
+
+            // 9–17: DB metadata
+            cs.setString(i++, tr.dbMaker);
+            cs.setString(i++, tr.dbEngine);
+            cs.setString(i++, tr.dbVersion);
+            cs.setString(i++, tr.dbUser);
+            cs.setString(i++, tr.dbRootUser);
+            cs.setString(i++, tr.dbInstallDir);
+
+            if (tr.dbPort != null) cs.setInt(i++, tr.dbPort);
+            else cs.setNull(i++, Types.INTEGER);
+
+            cs.setString(i++, tr.dbSocket);
+            cs.setString(i++, tr.databaseUnderTest);
+
+            // 18: config_id
+            cs.setLong(i++, configId);
+
+            // 19–25: NEW fields (tagging + properties + provenance)
+            cs.setString(i++, tr.testCaseTag);
+            cs.setString(i++, tr.autogenTags);
+            cs.setString(i++, tr.testRunProperties);
+            cs.setString(i++, tr.testRunPropertiesContents);
+            cs.setString(i++, tr.dbConfigOrigin);
+            cs.setString(i++, tr.dbConfigSourceFile);
+            cs.setString(i++, tr.dbConfigTmpFile);
+
+            // 26: baseline flag
+            cs.setBoolean(i++, tr.isBaseline);
+
+            // 27–30: thresholds
+            if (tr.pctWarning != null) cs.setInt(i++, tr.pctWarning);
+            else cs.setNull(i++, Types.INTEGER);
+
+            if (tr.pctFail != null) cs.setInt(i++, tr.pctFail);
+            else cs.setNull(i++, Types.INTEGER);
+
+            if (tr.pctGain != null) cs.setInt(i++, tr.pctGain);
+            else cs.setNull(i++, Types.INTEGER);
+
+            if (tr.pctDurationDrift != null) cs.setInt(i++, tr.pctDurationDrift);
+            else cs.setNull(i++, Types.INTEGER);
+
+            // 31–32: test metadata
+            cs.setString(i++, tr.testType);
+            cs.setString(i++, tr.comments);
+
+            // 33–35: timestamps + duration
+            cs.setTimestamp(i++, Timestamp.valueOf(tr.testTimestamp));
+
+            if (tr.testEndTime != null)
+                cs.setTimestamp(i++, Timestamp.valueOf(tr.testEndTime));
+            else
+                cs.setNull(i++, Types.TIMESTAMP);
+
+            if (tr.testDuration != null)
+                cs.setInt(i++, tr.testDuration);
+            else
+                cs.setNull(i++, Types.INTEGER);
+
+            // 36–37: warmup metadata
+            if (tr.warmupThreads != null) cs.setInt(i++, tr.warmupThreads);
+            else cs.setNull(i++, Types.INTEGER);
+
+            if (tr.warmupDuration != null) cs.setInt(i++, tr.warmupDuration);
+            else cs.setNull(i++, Types.INTEGER);
+
+            // 38–42: suite metadata
+            if (tr.testSuiteRevision != null) cs.setInt(i++, tr.testSuiteRevision);
+            else cs.setNull(i++, Types.INTEGER);
+
+            cs.setString(i++, tr.testSuitePmFile);
+
+            if (tr.numberOfRows != null) cs.setInt(i++, tr.numberOfRows);
+            else cs.setNull(i++, Types.INTEGER);
+
+            if (tr.numberOfTables != null) cs.setInt(i++, tr.numberOfTables);
+            else cs.setNull(i++, Types.INTEGER);
+
+            if (tr.rangeSize != null) cs.setInt(i++, tr.rangeSize);
+            else cs.setNull(i++, Types.INTEGER);
+
+            // 43–44: connector + thread list
+            cs.setString(i++, tr.connector);
+            cs.setString(i++, tr.threadList);
+
+            // 45: raw metadata JSON
+            cs.setString(i++, tr.metadata != null ? JsonUtil.toJson(tr.metadata) : "{}");
+
+            // 46–47: OUT params
+            cs.registerOutParameter(i++, Types.BIGINT);
+            cs.registerOutParameter(i++, Types.VARCHAR);
+
+            cs.execute();
+
+            return cs.getLong(i - 2);
+        }
+    }
 
     // ------------------------------------------------------------
     // Insert results and compute workload hash
@@ -243,6 +247,9 @@ public class DbIngest {
 
             String hash = computeWorkloadHash(tr);
             updateWorkloadHash(testRunId, hash);
+            
+            String tags = computeAutogenTags(tr);
+            updateAutogenTags(testRunId, tags);
         }
     }
 
@@ -278,11 +285,10 @@ public class DbIngest {
         // DB identity
         sb.append("DB_MAKER=").append(tr.dbMaker).append("|");
         sb.append("DB_ENGINE=").append(tr.dbEngine).append("|");
-        // Normalize to major only, ignore everything else
-        String cleaned = tr.dbVersion.replaceAll("[^0-9.].*$", ""); // strip suffixes
-        String[] parts = cleaned.split("\\.");
-        String major = parts.length > 0 ? parts[0] : "0";
+        // Normalize to major only, ignore everything else (use same logic as extractMajor)
+        String major = extractMajor(tr.dbVersion);
         sb.append("DB_VER=").append(major).append("|");
+
 
 
 
@@ -319,6 +325,42 @@ public class DbIngest {
         }
 
         return hex.toString();
+    }
+
+    // ------------------------------------------------------------
+    // Gen auto tags
+    // ------------------------------------------------------------
+    public static String computeAutogenTags(ParsedTestRun tr) {
+        Map<String,Object> tags = new LinkedHashMap<>();
+
+        tags.put("test_name", tr.testName);
+        tags.put("suite", tr.suiteName);
+        tags.put("suite_version", tr.suiteVersion);
+        tags.put("suite_revision", tr.testSuiteRevision);
+
+        tags.put("system_id", tr.systemId);
+
+        tags.put("db_maker", tr.dbMaker);
+        tags.put("db_engine", tr.dbEngine);
+        tags.put("db_version_major", extractMajor(tr.dbVersion));
+
+        tags.put("config_id", tr.configId);
+
+        tags.put("threads", tr.threadList);
+        tags.put("warmup_threads", tr.warmupThreads);
+        tags.put("warmup_duration", tr.warmupDuration);
+        tags.put("rows", tr.numberOfRows);
+        tags.put("tables", tr.numberOfTables);
+        tags.put("range", tr.rangeSize);
+        tags.put("connector", tr.connector);
+
+        tags.put("taf_version", tr.tafHarnessVersion);
+        tags.put("client_version", tr.clientVersion);
+
+        tags.put("iteration_count", tr.iterations.size());
+        tags.put("duration", tr.testDuration);
+
+        return JsonUtil.toJson(tags);
     }
 
 
@@ -382,4 +424,32 @@ public class DbIngest {
             return cs.executeUpdate();
         }
     }
+    
+    
+	 // ------------------------------------------------------------
+	 // Extract major DB version (matches workload hash logic)
+	 // ------------------------------------------------------------
+	 private static String extractMajor(String version) {
+	     if (version == null) return "0";
+	
+	     // Strip suffixes like "-MariaDB", "-log", etc.
+	     String cleaned = version.replaceAll("[^0-9.].*$", "");
+	
+	     String[] parts = cleaned.split("\\.");
+	     return (parts.length > 0 ? parts[0] : "0");
+	 }
+
+	// ------------------------------------------------------------
+	// Update autogen tags in DB
+	// ------------------------------------------------------------
+	private static void updateAutogenTags(long testRunId, String tagsJson) throws Exception {
+	    try (Connection conn = Db.getConnection()) {
+	        CallableStatement cs = conn.prepareCall(
+	            "{ call update_autogen_tags(?,?) }"
+	        );
+	        cs.setLong(1, testRunId);
+	        cs.setString(2, tagsJson);
+	        cs.execute();
+	    }
+	}
 }
