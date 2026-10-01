@@ -5,7 +5,7 @@ package mariadb;
 # Created:       January 2026
 # Last Modified: August 2026
 #
-# Vesion: 4.0
+# Vesion: 4.1
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -1076,6 +1076,12 @@ sub _db_setup_users {
 
         PrintVerbose($_me."Root password set");
     }
+    
+    # Get current host
+    my $hostname = `hostname`;
+    chomp($hostname);
+    
+    my @hosts = ('localhost', '%', $hostname);
 
     # TESTER USER: dual-identity model ('localhost' and '%')
     my $user  = $self->{db_user};
@@ -1091,13 +1097,13 @@ sub _db_setup_users {
             : "IDENTIFIED BY";
 
     # Drop both identities
-    for my $host ('localhost', '%') {
+    for my $host(@hosts) {
         my $sql = "DROP USER IF EXISTS '$user'\@'$host'";
         return ERROR if $self->_db_execute_no_return_query($sql) != OK;
     }
 
     # Create both identities
-    for my $host ('localhost', '%') {
+    for my $host(@hosts) {
         my $sql =
               "CREATE USER '$user'\@'$host' "
             . $auth_clause
@@ -1106,7 +1112,7 @@ sub _db_setup_users {
     }
 
     # Grant permissions to both identities
-    for my $host ('localhost', '%') {
+    for my $host(@hosts) {
         my $sql =
               "GRANT $perms ON *.* TO '$user'\@'$host'";
         return ERROR if $self->_db_execute_no_return_query($sql) != OK;
@@ -1114,7 +1120,7 @@ sub _db_setup_users {
 
     # Apply SSL requirement to both identities
     if ($ssl_required) {
-        for my $host ('localhost', '%') {
+        for my $host(@hosts) {
             my $sql =
                   "ALTER USER '$user'\@'$host' REQUIRE SSL";
             return ERROR if $self->_db_execute_no_return_query($sql) != OK;

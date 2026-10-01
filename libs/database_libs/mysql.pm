@@ -5,7 +5,7 @@ package mysql;
 # Created:       December 2025
 # Last Modified: September 2026
 #
-# Version: 4.0
+# Version: 4.1
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -1273,6 +1273,12 @@ sub _db_setup_users {
         PrintVerbose($_st."Root password set");
     }
 
+    # Get current host
+    my $hostname = `hostname`;
+    chomp($hostname);
+    
+    my @hosts = ('localhost', '%', $hostname);
+
     #
     # TESTER USER: create both localhost and % identities
     #
@@ -1293,7 +1299,7 @@ sub _db_setup_users {
     #
     # 1. Drop both identities
     #
-    for my $host ('localhost', '%') {
+    for my $host(@hosts) {
         my $sql = "DROP USER IF EXISTS '$user'\@'$host'";
         return ERROR if $self->_db_execute_no_return_query($sql) != OK;
     }
@@ -1301,7 +1307,7 @@ sub _db_setup_users {
     #
     # 2. Create both identities
     #
-    for my $host ('localhost', '%') {
+    for my $host(@hosts) {
         my $sql =
               "CREATE USER '$user'\@'$host' "
             . $auth_clause . " '$pass'";
@@ -1311,7 +1317,7 @@ sub _db_setup_users {
     #
     # 3. Grant permissions to both identities
     #
-    for my $host ('localhost', '%') {
+    for my $host(@hosts) {
         my $sql =
               "GRANT $perms ON *.* TO '$user'\@'$host'";
         return ERROR if $self->_db_execute_no_return_query($sql) != OK;
@@ -1321,7 +1327,7 @@ sub _db_setup_users {
     # 4. Apply SSL requirement to both identities (if enabled)
     #
     if ($ssl_required) {
-        for my $host ('localhost', '%') {
+        for my $host(@hosts) {
             my $sql =
                   "ALTER USER '$user'\@'$host' REQUIRE SSL";
             return ERROR if $self->_db_execute_no_return_query($sql) != OK;
