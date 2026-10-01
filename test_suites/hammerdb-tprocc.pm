@@ -2,8 +2,8 @@
 # hammerdb-tprocc.pm - HammerDB TPROCC Test Suite for TAF
 #
 # Created: October 2025
-# Last Modified: September 2026
-# Version: 4.0
+# Last Modified: October 2026
+# Version: 4.1
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -117,6 +117,7 @@ our %tsOpt = (
     # Hammerdb *.db in tmp
     always_recreate_hammerdb_state => undef,
     hammerdb_state_dir             => undef,
+
     # Agent
     agent                 => undef,
     agent_port            => undef,
@@ -154,6 +155,9 @@ our %tsOpt = (
     # Logging
     show_out_put     => undef,
     log_to_temp      => undef,
+    
+    # Setup 
+    setup_virtual_user_count => undef,
 
     # Common TPROCC options (apply to all DBs)
     number_of_warehouses => undef,
@@ -3299,30 +3303,44 @@ sub WriteTproccConfigFile {
     # Resolve requested thread count
     my $threads = $thread // 1;
     
-    #---------------------------------------------------------------------
-    # Setup-time invariant:
-    # HammerDB schema builders must not exceed:
-    #   - requested thread count
-    #   - warehouse count
-    #   - physical core count
-    # Use the minimum of the three.
-    #---------------------------------------------------------------------
-    if ($caller eq "setup") {
-
-        my $wh = $tsState{warehouses} // 1;
-
-        # Contributed-by: Amrendra Kumar <amroo76@gmail.com>
-        # Rationale: Prevent HammerDB schema builder thread explosion on small hosts
-        # by enforcing physical core count as an upper bound during setup.
+    # Optional override from test suite options
+    my $override = $tsOpt{setup_virtual_user_count};
     
-        # Determine physical core count
-        my $cores = 0;
-        if (open my $fh, '<', '/proc/cpuinfo') {
-            $cores++ while (<$fh>) =~ /processor/;
-            close $fh;
+    my $wh = $tsState{warehouses} // 1;
+    
+    # Determine CPU count
+    my $cores = `grep -c ^processor /proc/cpuinfo`;
+    chomp $cores;
+    $cores = $cores || 1;
+    
+    if (defined $override && $override =~ /^\d+$/ && $override > 0) {
+    
+        if ($override <= $wh) {
+            PrintVerbose($_wc.
+                " setup_virtual_user_count = $override used directly (<= warehouses).");
+            $threads = $override;
         }
-
-        $cores = $cores || 1;   # fallback safety
+        else {
+            PrintWarning($_wc.
+                " setup_virtual_user_count ($override) exceeds warehouses ($wh); ".
+                "falling back to min(requested_threads, warehouses, cpu_count).");
+    
+            my $limit = $threads;
+            $limit = $wh    if $wh    < $limit;
+            $limit = $cores if $cores < $limit;
+    
+            if ($threads > $limit) {
+                PrintWarning($_wc.
+                    " setup caller: forcing thread count from $threads to $limit ".
+                    "(builder threads <= warehouses and <= cpu_count).");
+                $threads = $limit;
+            }
+        }
+    
+    } else {
+    
+        PrintVerbose($_wc.
+            " no setup_virtual_user_count set; using min(requested_threads, warehouses, cpu_count).");
     
         my $limit = $threads;
         $limit = $wh    if $wh    < $limit;
@@ -3330,9 +3348,8 @@ sub WriteTproccConfigFile {
     
         if ($threads > $limit) {
             PrintWarning($_wc.
-                " setup caller: forcing thread count from $threads to $limit. ".
-                "HammerDB schema build requires builder threads <= warehouses ".
-                "and <= physical cores; override applies only during setup.");
+                " setup caller: forcing thread count from $threads to $limit ".
+                "(builder threads <= warehouses and <= cpu_count).");
             $threads = $limit;
         }
     }
