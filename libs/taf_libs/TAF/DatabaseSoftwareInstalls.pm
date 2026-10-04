@@ -3,7 +3,7 @@ package TAF::DatabaseSoftwareInstalls;
 # TAF::DatabaseSoftwareInstalls
 #
 # Created: Nov 2025
-# Last Modified: September 2026
+# Last Modified: October 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -81,7 +81,7 @@ package TAF::DatabaseSoftwareInstalls;
 #     - Runtime DB lifecycle management is intentionally out of scope and
 #       belongs in suite-specific or plugin-specific modules.
 #############################################################################
-our $VERSION = '4.0';
+our $VERSION = '4.1';
 #===============================================================================
 #                                Imports
 #===============================================================================
@@ -2518,6 +2518,7 @@ sub _UnpackLayeredPackages {
             rmdir($server_dir) or PrintWarning($di."Could not remove $server_dir");
         }
     }
+
     ###########################################################################
 
     PrintVerbose($di."Unified install root = $install_root");
@@ -4356,7 +4357,16 @@ sub _SelectBasePackage {
             return $pkg;
         }
     }
-
+    
+    #------------------------------------------------------------
+    # PostgreSQL: server RPM must be the base package
+    #------------------------------------------------------------
+    my @pg_server = grep { /postgresql.*server.*\.rpm$/i } @packages;
+    if (@pg_server) {
+        PrintVerbose("_SelectBasePackage -> PostgreSQL server base: $pg_server[0]");
+        return $pg_server[0];
+    }
+    
     #------------------------------------------------------------
     # 2. Known server/client binaries
     #------------------------------------------------------------
