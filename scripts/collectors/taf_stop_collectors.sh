@@ -1,9 +1,9 @@
 #!/bin/bash
 #===============================================================================
 # taf_stop_collectors.sh
-# TAF-MariaDB-Tools Version: 1.0
+# TAF-MariaDB-Tools Version: 1.1
 #
-# Last Modified: September 2026
+# Last Modified: October 2026
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2026
@@ -26,20 +26,39 @@
 # See https://www.gnu.org/licenses/ for details.
 #
 # PURPOSE:
-#     Stop all standard TAF performance collectors.
-#     Intended for cleanup after database and client workloads.
+#     Stop all standard TAF performance collectors started by
+#     taf_start_collectors.sh.
 #
 # SCOPE OF THIS SCRIPT:
-#     - Terminate mpstat, sar -q, pidstat, and perf sched collectors.
+#     - Detect TAF log directory from stdout redirection.
+#     - Read collector PIDs from collectors.pids.
+#     - Terminate vmstat, pidstat, mpstat, and sar collectors cleanly.
 #     - Safe to run multiple times; no harmful side effects.
 #
 # NOTES:
-#     Uses pkill -f to match collector script names.
-#     Ensures all collectors are stopped before TAF teardown.
+#     This script replaces older pkill-based logic.
+#     It ensures only the collectors started by TAF are terminated.
 #===============================================================================
-pkill -f taf_collect_mpstat.sh
-pkill -f taf_collect_sarq.sh
-pkill -f taf_collect_pidstat.sh
-pkill -f taf_collect_perf_sched.sh
+
+# Discover the TAF log file path from stdout redirection
+LOGFILE=$(readlink /proc/$$/fd/1)
+LOGDIR=$(dirname "$LOGFILE")
+
+PIDFILE="$LOGDIR/collectors.pids"
+
+echo "TAF collector stop script detected log directory: $LOGDIR"
+
+if [ -f "$PIDFILE" ]; then
+    echo "Stopping collectors listed in $PIDFILE"
+    while read pid; do
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null
+        fi
+    done < "$PIDFILE"
+else
+    echo "No collectors.pids file found; nothing to stop."
+fi
 
 echo "TAF collectors stopped."
+
+exit 0

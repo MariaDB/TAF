@@ -1,46 +1,61 @@
 #!/bin/bash
 #===============================================================================
 # taf_start_collectors.sh
-# TAF-MariaDB-Tools Version: 1.0
-#
-# Last Modified: September 2026
+# TAF-MariaDB-Tools Version: 1.2
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2026
 # MariaDB Foundation and Jonathan "jeb" Miller
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; version 2 or later of the License.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335
-#
 # Licensed under the GNU General Public License, version 2 or later (GPLv2+).
 # See https://www.gnu.org/licenses/ for details.
 #
 # PURPOSE:
-#     Start all standard TAF performance collectors in background.
-#     Intended for evidence capture during database and client workloads.
+#     Start all system-level performance collectors used during TAF runs.
+#     Automatically detect the TAF log directory via stdout redirection.
+#     Launch collectors in background mode and record their PIDs.
 #
-# SCOPE OF THIS SCRIPT:
-#     - Launch mpstat, sar -q, and pidstat collectors.
-#     - Accept optional run label for output naming.
-#     - Run collectors until explicitly stopped by taf_stop_collectors.sh.
+# NOTE:
+#     Version 1.2 introduces a configurable INTERVAL variable so all collectors
+#     use a unified sampling cadence. This improves correlation across vmstat,
+#     pidstat, mpstat, sar, and iostat outputs during analysis.
 #
-# NOTES:
-#     Collectors run independently and write logs to the current directory.
-#     Safe to invoke before starting TAF database or client actions.
+# REQUIREMENTS:
+#     Requires sysstat package (vmstat, pidstat, mpstat, sar, iostat).
+#     Safe to run in background during TAF workloads.
+#     Must be paired with taf_stop_collectors.sh.
 #===============================================================================
-scripts/collectors/taf_collect_mpstat.sh run_mpstat &
-scripts/collectors/taf_collect_sarq.sh run_sarq &
 
-echo "TAF collectors started:"
-echo "  mpstat"
-echo "  sar -q"
+# Sampling interval (seconds)
+INTERVAL=10
+
+# Discover the TAF log file path from stdout redirection
+LOGFILE=$(readlink /proc/$$/fd/1)
+LOGDIR=$(dirname "$LOGFILE")
+
+echo "TAF collector start script detected log directory: $LOGDIR"
+
+PIDFILE="$LOGDIR/collectors.pids"
+> "$PIDFILE"
+
+# vmstat - global context switches
+vmstat "$INTERVAL" > "$LOGDIR/vmstat.out" &
+echo $! >> "$PIDFILE"
+
+# pidstat - per-thread context switches
+pidstat -w "$INTERVAL" > "$LOGDIR/pidstat.out" &
+echo $! >> "$PIDFILE"
+
+# mpstat - per-CPU utilization
+mpstat -P ALL "$INTERVAL" > "$LOGDIR/mpstat.out" &
+echo $! >> "$PIDFILE"
+
+# sar - run queue length
+sar -q "$INTERVAL" > "$LOGDIR/sarq.out" &
+echo $! >> "$PIDFILE"
+
+# iostat - disk I/O behavior
+iostat -x "$INTERVAL" > "$LOGDIR/iostat.out" &
+echo $! >> "$PIDFILE"
+
+exit 0
