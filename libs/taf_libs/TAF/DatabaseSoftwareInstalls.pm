@@ -81,7 +81,7 @@ package TAF::DatabaseSoftwareInstalls;
 #     - Runtime DB lifecycle management is intentionally out of scope and
 #       belongs in suite-specific or plugin-specific modules.
 #############################################################################
-our $VERSION = '4.1';
+our $VERSION = '4.2';
 #===============================================================================
 #                                Imports
 #===============================================================================
@@ -2359,11 +2359,9 @@ sub _UnpackBasePackage {
 #     - Validate staging integrity after each extraction.
 #     - Discover all top-level directories created by base and layered
 #       extraction.
-#     - Merge all discovered top-level directories into a fresh install_root
-#       under the staging root, flattening wrapper directories when present.
-#     - Remove leftover packaging artifacts (e.g., .rpm files) from the
-#       unified install_root.
-#     - Emit verbose logging for all extraction and merge operations.
+#     - Merge all discovered top-level directories into a fresh install_root.
+#     - Perform inner-tarball extraction, RPM cleanup, wrapper-directory
+#       flattening, and duplicate-directory collapse.
 #     - Fail immediately on any extraction or merge error.
 #
 # RETURNS:
@@ -2372,28 +2370,91 @@ sub _UnpackBasePackage {
 #
 # NOTES:
 #     - INTERNAL routine; not intended for external callers.
-#     - install_root produced here is the canonical input to
-#       _ScanAndUnpackInnerTarballs() and _NormalizeUsrLayout().
+#     - install_root produced here is the canonical input to subsequent
+#       normalization routines.
 #     - Layering order is deterministic and must not be altered.
-#     - Wrapper-directory flattening is performed during the merge phase.
 #     - No silent fallbacks are permitted; all failures are explicit.
 #===============================================================================
 sub _UnpackLayeredPackages {
     my ($ctx, $stage_root, $packages_ref) = @_;
 
-    my $options = $ctx->{options};
-    my $debug   = $options->{tools_debug} || 0;
-    my $di      = StageStart(TAF_DBSI."_UnpackLayeredPackages ->");
+    my $debug = $ctx->{options}{tools_debug} || 0;
+    my $di    = StageStart(TAF_DBSI."_UnpackLayeredPackages ->");
 
-    # Determine the base package
     my $base_pkg = _SelectBasePackage($packages_ref);
 
-    # Extract all layered packages into the staging root
+    # Correct call — includes $di
+    return undef unless _ExtractLayeredPackages(
+        $stage_root,
+        $packages_ref,
+        $base_pkg,
+        $debug,
+        $di
+    );
+
+    my @top_dirs = _CollectTopLevelDirs($stage_root, $debug);
+    return undef unless @top_dirs;
+
+    my $install_root = _MergeTopLevelDirs($stage_root, \@top_dirs, $debug);
+    return undef unless -d $install_root;
+
+    _ExtractInnerTarballs($install_root, $debug, $di);
+    _CleanupRPMs($install_root, $di);
+    _FlattenServerDirIfNested($install_root, $di);
+    _CollapseDuplicateDirs($install_root, $di);
+
+    PrintVerbose($di."Unified install root = $install_root");
+    StageEnd($di);
+    return $install_root;
+}
+
+#===============================================================================
+# _ExtractLayeredPackages
+#
+# PURPOSE:
+#     Extract all layered install packages into the staging root, skipping the
+#     base package. Ensures deterministic extraction order and validates staging
+#     integrity after each extraction.
+#
+# PARAMETERS:
+#     $stage_root
+#         Directory into which layered packages are extracted.
+#
+#     $packages_ref
+#         Arrayref of all install packages (base + layers).
+#
+#     $base_pkg
+#         Absolute path to the base package; skipped during extraction.
+#
+#     $debug
+#         Boolean flag enabling verbose extraction logging.
+#
+#     $di
+#         Diagnostic prefix string for logging.
+#
+# BEHAVIOR:
+#     - Iterate all packages in deterministic order.
+#     - Skip the base package.
+#     - Extract each layered package into $stage_root.
+#     - Validate that $stage_root remains a directory after extraction.
+#     - Emit verbose logging when enabled.
+#     - Fail immediately on any extraction error.
+#
+# RETURNS:
+#     1      - All layered packages extracted successfully.
+#     undef  - Any extraction failure or staging inconsistency.
+#
+# NOTES:
+#     - INTERNAL routine; not intended for external callers.
+#     - No silent fallbacks; all failures are explicit.
+#===============================================================================
+sub _ExtractLayeredPackages {
+    my ($stage_root, $packages_ref, $base_pkg, $debug, $di) = @_;
+
     for my $pkg (@$packages_ref) {
 
-        if (defined $base_pkg && $pkg eq $base_pkg) {
-            next;
-        }
+        # Skip base package
+        next if defined $base_pkg && $pkg eq $base_pkg;
 
         PrintVerbose($di."Unpacking layered package: $pkg");
 
@@ -2405,126 +2466,275 @@ sub _UnpackLayeredPackages {
         }
     }
 
-    # Collect all top-level directories under the staging root
-    my @top_dirs = _CollectTopLevelDirs($stage_root, $debug);
+    return 1;
+}
 
-    if (!@top_dirs) {
-        PrintError($di."No top-level directories detected in staging after layered unpack.");
-        return undef;
+#===============================================================================
+# _ExtractInnerTarballs
+#
+# PURPOSE:
+#     Locate and extract any inner tarballs present directly under the unified
+#     install_root. Removes the archive files after successful extraction.
+#
+# PARAMETERS:
+#     $install_root
+#         Unified install directory produced by layered extraction and merging.
+#
+#     $debug
+#         Boolean flag enabling verbose command logging.
+#
+#     $di
+#         Diagnostic prefix string for logging.
+#
+# BEHAVIOR:
+#     - Scan install_root for tar, tar.gz, tar.xz, tgz, txz, and tbz archives.
+#     - Attempt extraction of each archive into install_root.
+#     - Log extraction attempts and commands when debug is enabled.
+#     - Skip archives that fail to extract; do not treat as fatal.
+#     - Remove successfully extracted archive files.
+#
+# RETURNS:
+#     None. All failures are logged but non-fatal.
+#
+# NOTES:
+#     - INTERNAL routine; not intended for external callers.
+#     - Extraction failures are non-fatal by design.
+#===============================================================================
+sub _ExtractInnerTarballs {
+    my ($install_root, $debug, $di) = @_;
+
+    opendir(my $idh, $install_root) or return;
+
+    my @inner_archives = grep {
+        /\.(tar|tar\.gz|tar\.xz|tgz|txz|tbz)$/
+    } readdir($idh);
+
+    closedir($idh);
+
+    for my $archive (@inner_archives) {
+        my $path = File::Spec->catfile($install_root, $archive);
+
+        PrintVerbose($di."Attempting to extract inner archive: $path");
+
+        my $cmd = "tar -xf '$path' -C '$install_root'";
+        PrintVerbose($di."Running: $cmd") if $debug;
+
+        my $rc = system($cmd);
+
+        if ($rc != 0) {
+            PrintWarning($di."Inner archive could not be extracted and will be skipped: $archive");
+            next;
+        }
+
+        unlink $path;
     }
+}
 
-    # Merge all top-level dirs into a fresh unified install_root
-    my $install_root = _MergeTopLevelDirs($stage_root, \@top_dirs, $debug);
+#===============================================================================
+# _CleanupRPMs
+#
+# PURPOSE:
+#     Remove any leftover .rpm files from the unified install_root after layered
+#     extraction and merging.
+#
+# PARAMETERS:
+#     $install_root
+#         Unified install directory produced by layered extraction and merging.
+#
+#     $di
+#         Diagnostic prefix string for logging.
+#
+# BEHAVIOR:
+#     - Scan install_root for files ending in .rpm.
+#     - Remove all discovered RPM files.
+#     - Emit verbose logging indicating the number of files removed.
+#     - Log and return silently if install_root cannot be opened.
+#
+# RETURNS:
+#     None. Cleanup failures are logged but non-fatal.
+#
+# NOTES:
+#     - INTERNAL routine; not intended for external callers.
+#     - RPM cleanup is a post-merge hygiene step.
+#===============================================================================
+sub _CleanupRPMs {
+    my ($install_root, $di) = @_;
 
-    if (!($install_root && -d $install_root)) {
-        PrintError($di."Failed to merge layered package trees into a unified install root.");
-        return undef;
-    }
+    opendir(my $dh, $install_root) or do {
+        PrintError($di."Unable to open install_root for RPM cleanup: $install_root");
+        return;
+    };
 
-    ###########################################################################
-    # Extract inner tarballs inside install_root
-    ###########################################################################
-    if (opendir(my $idh, $install_root)) {
-        my @inner_archives = grep {
-            /\.(tar|tar\.gz|tar\.xz|tgz|txz|tbz)$/
-        } readdir($idh);
-        closedir($idh);
+    my @rpms = grep { /\.rpm$/ } readdir($dh);
+    closedir($dh);
 
-        for my $archive (@inner_archives) {
-            my $path = File::Spec->catfile($install_root, $archive);
-
-            PrintVerbose($di."Attempting to extract inner archive: $path");
-
-            my $cmd = "tar -xf '$path' -C '$install_root'";
-            PrintVerbose($di."Running: $cmd") if $debug;
-
-            my $rc = system($cmd);
-
-            if ($rc != 0) {
-                PrintWarning($di."Inner archive could not be extracted and will be skipped: $archive");
-                next;
-            }
-
+    if (@rpms) {
+        PrintVerbose($di."Removing ".scalar(@rpms)." leftover RPM files from install root");
+        foreach my $rpm (@rpms) {
+            my $path = File::Spec->catfile($install_root, $rpm);
             unlink $path;
         }
     }
-    ###########################################################################
+}
 
-    # Remove leftover RPMs from the unified install root
-    if (opendir(my $dh, $install_root)) {
-        my @rpms = grep { /\.rpm$/ } readdir($dh);
-        closedir($dh);
+#===============================================================================
+# _FlattenServerDirIfNested
+#
+# PURPOSE:
+#     Detect and flatten a nested server directory under install_root when the
+#     server tree is wrapped inside an extra top-level directory containing bin/.
+#
+# PARAMETERS:
+#     $install_root
+#         Unified install directory produced by layered extraction and merging.
+#
+#     $di
+#         Diagnostic prefix string for logging.
+#
+# BEHAVIOR:
+#     - Identify any top-level directory under install_root containing bin/.
+#     - Move all children of that directory up one level into install_root.
+#     - Remove the now-empty wrapper directory.
+#     - Emit verbose logging for all operations.
+#     - Fail immediately if any move operation fails.
+#
+# RETURNS:
+#     None. Errors are logged and treated as fatal for this routine.
+#
+# NOTES:
+#     - INTERNAL routine; not intended for external callers.
+#     - Wrapper-directory flattening is required for certain vendor packaging
+#       layouts.
+#===============================================================================
+sub _FlattenServerDirIfNested {
+    my ($install_root, $di) = @_;
 
-        if (@rpms) {
-            PrintVerbose($di."Removing ".scalar(@rpms)." leftover RPM files from install root");
-            foreach my $rpm (@rpms) {
-                my $path = File::Spec->catfile($install_root, $rpm);
-                unlink $path;
-            }
+    opendir(my $ndh, $install_root) or return;
+
+    my @dirs = grep {
+        -d File::Spec->catdir($install_root, $_)
+        && $_ ne '.'
+        && $_ ne '..'
+    } readdir($ndh);
+
+    closedir($ndh);
+
+    my $server_dir;
+
+    # Find directory containing bin/
+    for my $d (@dirs) {
+        my $candidate = File::Spec->catdir($install_root, $d);
+        if (-d File::Spec->catdir($candidate, "bin")) {
+            $server_dir = $candidate;
+            last;
         }
-    } else {
-        PrintError($di."Unable to open install_root for RPM cleanup: $install_root");
-        return undef;
     }
 
-    ###########################################################################
-    # INLINE NORMALIZATION: flatten the actual server directory if nested
-    ###########################################################################
-    if (opendir(my $ndh, $install_root)) {
+    return unless defined $server_dir;
 
-        my @dirs = grep {
-            -d File::Spec->catdir($install_root, $_)
-            && $_ ne '.'
-            && $_ ne '..'
-        } readdir($ndh);
+    PrintVerbose($di."Flattening server directory: $server_dir");
 
-        closedir($ndh);
+    opendir(my $sdh, $server_dir) or do {
+        PrintError($di."Unable to open server directory: $server_dir");
+        return;
+    };
 
-        # Find the directory that contains bin/
-        my $server_dir = undef;
+    while (my $item = readdir($sdh)) {
+        next if $item eq '.' || $item eq '..';
 
-        for my $d (@dirs) {
-            my $candidate = File::Spec->catdir($install_root, $d);
-            if (-d File::Spec->catdir($candidate, "bin")) {
-                $server_dir = $candidate;
-                last;
-            }
-        }
+        my $src = File::Spec->catdir($server_dir, $item);
+        my $dst = File::Spec->catdir($install_root, $item);
 
-        if (defined $server_dir) {
-            PrintVerbose($di."Flattening server directory: $server_dir");
-
-            opendir(my $sdh, $server_dir) or do {
-                PrintError($di."Unable to open server directory: $server_dir");
-                return undef;
-            };
-
-            while (my $item = readdir($sdh)) {
-                next if $item eq '.' || $item eq '..';
-
-                my $src = File::Spec->catdir($server_dir, $item);
-                my $dst = File::Spec->catdir($install_root, $item);
-
-                my $rc = system("mv", $src, $dst);
-                if ($rc != 0) {
-                    PrintError($di."Failed to move $src to $dst");
-                    closedir($sdh);
-                    return undef;
-                }
-            }
-
+        my $rc = system("mv", $src, $dst);
+        if ($rc != 0) {
+            PrintError($di."Failed to move $src to $dst");
             closedir($sdh);
-
-            rmdir($server_dir) or PrintWarning($di."Could not remove $server_dir");
+            return;
         }
     }
 
-    ###########################################################################
+    closedir($sdh);
 
-    PrintVerbose($di."Unified install root = $install_root");
+    rmdir($server_dir) or PrintWarning($di."Could not remove $server_dir");
+}
 
-    StageEnd($di);
-    return $install_root;
+#===============================================================================
+# _CollapseDuplicateDirs
+#
+# PURPOSE:
+#     Detect and collapse duplicate directory structures of the form
+#     install_root/<entry>/<entry> by merging contents upward and removing the
+#     redundant nested directory.
+#
+# PARAMETERS:
+#     $install_root
+#         Unified install directory produced by layered extraction and merging.
+#
+#     $di
+#         Diagnostic prefix string for logging.
+#
+# BEHAVIOR:
+#     - Iterate all top-level directories under install_root.
+#     - Detect nested duplicate directories named identically to their parent.
+#     - Merge directory contents upward, resolving conflicts by merging
+#       subdirectories recursively.
+#     - Remove the redundant nested directory after merge.
+#     - Emit verbose logging for all operations.
+#
+# RETURNS:
+#     None. Errors are logged; fatal errors abort the routine.
+#
+# NOTES:
+#     - INTERNAL routine; not intended for external callers.
+#     - This normalization step preserves historical behavior for vendor
+#       packaging that produces duplicate directory trees.
+#===============================================================================
+sub _CollapseDuplicateDirs {
+    my ($install_root, $di) = @_;
+
+    opendir(my $dh, $install_root) or die "Cannot open $install_root: $!";
+
+    while (my $entry = readdir($dh)) {
+        next if $entry eq '.' || $entry eq '..';
+
+        my $top = File::Spec->catdir($install_root, $entry);
+        next unless -d $top;
+
+        my $dup = File::Spec->catdir($top, $entry);
+        next unless -d $dup;
+
+        # Collapse install_root/<entry>/<entry>
+        opendir(my $ddh, $dup) or next;
+
+        while (my $child = readdir($ddh)) {
+            next if $child eq '.' || $child eq '..';
+
+            my $src  = File::Spec->catdir($dup, $child);
+            my $dest = File::Spec->catdir($top, $child);
+
+            if (-d $src && -d $dest) {
+                # Merge contents
+                opendir(my $sdh, $src) or next;
+                while (my $sub = readdir($sdh)) {
+                    next if $sub eq '.' || $sub eq '..';
+                    my $sub_src = File::Spec->catdir($src, $sub);
+                    my $cmd     = sprintf("mv \"%s\" \"%s\"/", $sub_src, $dest);
+                    system("sh", "-c", $cmd);
+                }
+                closedir($sdh);
+                rmdir($src);
+            } else {
+                # Move child up one level
+                my $cmd = sprintf("mv \"%s\" \"%s\"/", $src, $top);
+                system("sh", "-c", $cmd);
+            }
+        }
+
+        closedir($ddh);
+        rmdir($dup);
+    }
+
+    closedir($dh);
 }
 
 #===============================================================================
