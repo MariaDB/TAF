@@ -3,9 +3,9 @@ package mariadb;
 # mariadb.pm - MariaDB Database Plugin for TAF
 #
 # Created:       January 2026
-# Last Modified: August 2026
+# Last Modified: October 2026
 #
-# Vesion: 4.1
+# Vesion: 4.2
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -1791,15 +1791,26 @@ sub _db_detect_capabilities {
     my $supports_install_db = FALSE;
     my $supports_initialize = FALSE;
 
-    # Detect mariadb-install-db (optional in modern builds)
-    my $install = _find_binary($self->{install_root}, 'mariadb-install-db');
+    #
+    # Detect install-db script (MariaDB moved this around over the years)
+    #
+    my $install;
+
+    # Newer name
+    $install ||= _find_binary($self->{install_root}, 'mariadb-install-db');
+
+    # Older name
+    $install ||= _find_binary($self->{install_root}, 'mysql_install_db');
+
     if ($install) {
         $supports_install_db = TRUE;
         $self->{mariadb_install_db_bin} = $install;
         PrintVerbose($_tag."Found install-db script: $install");
     }
 
+    #
     # Detect --initialize support
+    #
     my $server = $self->{mariadbd_bin};
     if ($server && -x $server) {
 
@@ -1814,6 +1825,7 @@ sub _db_detect_capabilities {
 
     return ($supports_install_db, $supports_initialize);
 }
+
 
 ################################################################################
 # _db_prepare_data_dir
