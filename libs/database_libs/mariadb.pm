@@ -3,9 +3,9 @@ package mariadb;
 # mariadb.pm - MariaDB Database Plugin for TAF
 #
 # Created:       January 2026
-# Last Modified: October 2026
+# Last Modified: November 2026
 #
-# Vesion: 4.2
+# Vesion: 4.3
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -1140,19 +1140,27 @@ sub _db_setup_users {
 # _detect_mariadb_version
 #
 # PURPOSE:
-#     Detect and normalize the MariaDB server version. This routine invokes the
-#     server binary with --version, extracts a strict MariaDB version token,
-#     normalizes it, and stores both the raw and parsed components on $self.
+#     Detect, validate, and normalize the MariaDB server version. This routine
+#     invokes the server binary with --version, extracts a strict MariaDB
+#     version token, normalizes it, and stores both the raw and parsed
+#     components on $self.
 #
 # BEHAVIOR:
 #     - Executes: <mariadbd> --version 2>&1
+#     - Always captures and inspects full output (including error text).
+#     - On failure, emits clear diagnostic messages explaining *why* detection
+#       failed and shows the raw output to the user.
 #     - Searches output for a MariaDB version token, including extended
-#       packaging formats (e.g. "10.11.6-MariaDB-1:10.11.6+maria~ubu2004").
-#     - Extracts:
+#       packaging formats such as:
+#           "11.6.0-preview-MariaDB"
+#           "10.5.23-MariaDB-1:10.5.23+maria~ubu2004"
+#     - Rejects non‑MariaDB servers (e.g. "8.0.36-MySQL").
+#     - Extracts and stores:
 #           * full raw version string (e.g. "10.11.6-MariaDB-1:...")
 #           * normalized base version (e.g. "10.11.6-MariaDB")
 #           * major, minor, patch numbers
-#     - Stores results on:
+#
+# STORED FIELDS:
 #           $self->{server_version_raw}
 #           $self->{server_version_norm}
 #           $self->{server_version_major}
@@ -1160,51 +1168,79 @@ sub _db_setup_users {
 #           $self->{server_version_patch}
 #
 # CONTRACT:
-#     - Returns undef on failure; caller is responsible for logging.
+#     - Returns normalized version string (e.g. "10.11.6-MariaDB") on success.
+#     - Returns undef on failure *after printing a diagnostic message* that
+#       explains the reason (missing binary, non‑executable, no output,
+#       incompatible build, no version token, invalid normalization, etc.).
+#     - Never fails silently. All failure paths emit actionable guidance.
 #     - Does not create side effects beyond storing parsed fields.
-#     - Parsing is strict to avoid false positives but tolerant of packaging
-#       suffixes.
+#     - Parsing remains strict to avoid false positives but tolerant of
+#       packaging suffixes.
 #
 # RETURNS:
-#     Normalized version string (e.g. "10.11.6-MariaDB") on success
-#     undef on failure
+#     Normalized version string on success
+#     undef on failure (with diagnostic output)
 ################################################################################
 sub _detect_mariadb_version {
     my ($self, $binary) = @_;
 
-    return undef unless defined $binary && -x $binary;
+    # Must exist and be executable
+    unless (defined $binary && -x $binary) {
+        PrintError("Version detection failed: binary '$binary' does not exist or is not executable.");
+        return undef;
+    }
 
     # Capture version output
     my $cmd = "\"$binary\" --version 2>&1";
     my $output = `$cmd`;
-    return undef unless defined $output && length $output;
 
-    # Extract the full MariaDB version token
-    #
-    # Examples matched:
-    #   10.11.6-MariaDB
-    #   10.5.23-MariaDB-1:10.5.23+maria~ubu2004
-    my ($raw) = $output =~ /(\d+\.\d+\.\d+\-MariaDB[^\s]*)/;
-    return undef unless $raw;
+    unless (defined $output && length $output) {
+        PrintError("Version detection failed: '$cmd' produced no output.\n".
+                   "This usually indicates a broken or incompatible MariaDB build.\n".
+                   "Please run the command manually and verify the binary.");
+        return undef;
+    }
 
-    # Normalize to the base version: 10.11.6-MariaDB
-    my ($norm) = $raw =~ /^(\d+\.\d+\.\d+\-MariaDB)/;
-    return undef unless $norm;
+    # Show output if it contains obvious error text
+    if ($output =~ /(error|fail|incompatible|cannot|unsupported)/i) {
+        PrintError("Version detection failed: '$cmd' returned an error:\n$output\n".
+                   "Please verify your MariaDB build, OpenSSL linkage, and dependencies.");
+        return undef;
+    }
 
-    # Extract numeric components
-    my ($maj, $min, $pat) = $norm =~ /^(\d+)\.(\d+)\.(\d+)\-MariaDB$/;
-    return undef unless defined $maj && defined $min && defined $pat;
+    # STEP 1: Extract raw MariaDB version token
+    my ($raw) = $output =~ /(\d+\.\d+\.\d+(?:-[A-Za-z0-9]+)?-MariaDB[^\s]*)/;
 
-    # Store results
+    unless ($raw) {
+        PrintError("Version detection failed: could not find a MariaDB version token in output:\n$output\n".
+                   "This may indicate a corrupted binary or a non-MariaDB server.");
+        return undef;
+    }
+
+    # STEP 2: Normalize to base form
+    my $norm = $raw;
+    $norm =~ s/^(\d+\.\d+\.\d+)(?:-[A-Za-z0-9]+)?-MariaDB/$1-MariaDB/;
+
+    unless ($norm =~ /^(\d+)\.(\d+)\.(\d+)-MariaDB$/) {
+        PrintError("Version detection failed: normalized version '$norm' is invalid.\n".
+                   "Raw token was: '$raw'\nOutput was:\n$output");
+        return undef;
+    }
+
+    # STEP 3: Extract numeric components
+    my ($maj, $min, $pat) = ($1, $2, $3);
+
+    # STEP 4: Store results
     $self->{server_version_raw}   = $raw;
     $self->{server_version_norm}  = $norm;
     $self->{server_version_major} = $maj;
     $self->{server_version_minor} = $min;
     $self->{server_version_patch} = $pat;
 
-    PrintVerbose("mariadb::_detect_mariadb_version Complete");
-    return $self->{server_version_norm};
+    PrintVerbose("mariadb::_detect_mariadb_version Complete: $norm");
+    return $norm;
 }
+
 
 ################################################################################
 # _compute_server_ssl_flags
