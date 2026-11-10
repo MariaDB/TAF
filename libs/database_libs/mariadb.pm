@@ -5,7 +5,7 @@ package mariadb;
 # Created:       January 2026
 # Last Modified: November 2026
 #
-# Vesion: 4.3
+# Vesion: 4.4
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -1018,24 +1018,27 @@ sub _db_execute_no_return_query {
 # _db_setup_users
 #
 # PURPOSE:
-#     Create and configure all required MariaDB users during initialization.
-#     This routine:
-#         - Sets the final root password (runtime mode)
-#         - Recreates the tester user (localhost and %)
-#         - Applies configured permissions
-#         - Applies REQUIRE SSL when demanded by ssl_mode
+#     Create and configure all required MariaDB users during runtime initialization.
+#
+# RESPONSIBILITIES:
+#       - Set the final root password (runtime mode only)
+#       - Recreate the tester user across all required hosts (localhost, %, hostname)
+#       - Apply configured permissions
+#       - Enforce REQUIRE SSL when ssl_mode demands it
 #
 # BEHAVIOR:
-#     - Executes all SQL through the unified no-return executor using
-#       socket-only connectivity.
+#     - All SQL is executed through the unified no-return executor (socket-only).
 #     - Assumes the server is running normally with grant tables enabled.
 #     - Does NOT run during bootstrap; bootstrap performs no user changes.
 #
 # CONTRACT:
-#     - Must only be called after db_start() has launched the runtime server.
-#     - SSL file existence and SSL-mode validation occur earlier.
-#     - A return value of OK guarantees that all required users exist with the
-#       correct authentication, permissions, and SSL requirements.
+#     - Must be called only after db_start() has launched the runtime server.
+#     - SSL file existence and ssl_mode validation occur earlier in the workflow.
+#     - A return value of OK guarantees:
+#           * All required users exist
+#           * Correct authentication method is applied
+#           * Correct permissions are applied
+#           * SSL requirements are enforced when applicable
 ################################################################################
 sub _db_setup_users {
     my ($self) = @_;
@@ -1043,44 +1046,53 @@ sub _db_setup_users {
     my $_me = "MariaDB -> Setup Users -> ";
     my $_st = StageStart($_me);
 
+    my $ver = $self->{mariadb_version} // '';
+    my $is_old = ($ver lt '10.2');   # 10.0–10.1: no ALTER USER
+
     # ROOT USER: set final root password (runtime mode)
     if ($self->{db_root_pass}) {
 
-        my $clause =
-            $self->{db_use_native_for_passwords}
-                ? "IDENTIFIED WITH mysql_native_password BY"
-                : "IDENTIFIED BY";
+        my ($sql_local, $sql_loopback);
 
-        my $sql =
-              "ALTER USER '"
-            . $self->{db_root_user}
-            . "'\@'localhost' "
-            . $clause
-            . " '"
-            . $self->{db_root_pass}
-            . "'";
+        if ($is_old) {
+            # Old MariaDB syntax
+            $sql_local    = "SET PASSWORD FOR '$self->{db_root_user}'\@'localhost' = PASSWORD('$self->{db_root_pass}')";
+            $sql_loopback = "SET PASSWORD FOR '$self->{db_root_user}'\@'127.0.0.1' = PASSWORD('$self->{db_root_pass}')";
+        } else {
+            my $clause =
+                $self->{db_use_native_for_passwords}
+                    ? "IDENTIFIED WITH mysql_native_password BY"
+                    : "IDENTIFIED BY";
 
-        # Runtime mode: no bootstrap flag
-        return ERROR if $self->_db_execute_no_return_query($sql,TRUE) != OK;
-      
-        my $sql2 =
-            "ALTER USER '"
-           . $self->{db_root_user}
-           . "'\@'127.0.0.1' "
-           . $clause
-           . " '"
-           . $self->{db_root_pass}
-           . "'";
+            $sql_local =
+                  "ALTER USER '"
+                . $self->{db_root_user}
+                . "'\@'localhost' "
+                . $clause
+                . " '"
+                . $self->{db_root_pass}
+                . "'";
 
-        return ERROR if $self->_db_execute_no_return_query($sql2,FALSE) != OK;
+            $sql_loopback =
+                  "ALTER USER '"
+                . $self->{db_root_user}
+                . "'\@'127.0.0.1' "
+                . $clause
+                . " '"
+                . $self->{db_root_pass}
+                . "'";
+        }
+
+        return ERROR if $self->_db_execute_no_return_query($sql_local,  TRUE)  != OK;
+        return ERROR if $self->_db_execute_no_return_query($sql_loopback, FALSE) != OK;
 
         PrintVerbose($_me."Root password set");
     }
-    
+
     # Get current host
     my $hostname = `hostname`;
     chomp($hostname);
-    
+
     my @hosts = ('localhost', '%', $hostname);
 
     # TESTER USER: dual-identity model ('localhost' and '%')
@@ -1097,22 +1109,32 @@ sub _db_setup_users {
             : "IDENTIFIED BY";
 
     # Drop both identities
-    for my $host(@hosts) {
+    for my $host (@hosts) {
         my $sql = "DROP USER IF EXISTS '$user'\@'$host'";
         return ERROR if $self->_db_execute_no_return_query($sql) != OK;
     }
 
     # Create both identities
-    for my $host(@hosts) {
-        my $sql =
-              "CREATE USER '$user'\@'$host' "
-            . $auth_clause
-            . " '$pass'";
-        return ERROR if $self->_db_execute_no_return_query($sql) != OK;
+    for my $host (@hosts) {
+        my $sql;
+        if ($is_old) {
+            # Old MariaDB: CREATE USER + SET PASSWORD
+            $sql = "CREATE USER '$user'\@'$host'";
+            return ERROR if $self->_db_execute_no_return_query($sql) != OK;
+
+            my $pwd_sql = "SET PASSWORD FOR '$user'\@'$host' = PASSWORD('$pass')";
+            return ERROR if $self->_db_execute_no_return_query($pwd_sql) != OK;
+        } else {
+            $sql =
+                  "CREATE USER '$user'\@'$host' "
+                . $auth_clause
+                . " '$pass'";
+            return ERROR if $self->_db_execute_no_return_query($sql) != OK;
+        }
     }
 
     # Grant permissions to both identities
-    for my $host(@hosts) {
+    for my $host (@hosts) {
         my $sql =
               "GRANT $perms ON *.* TO '$user'\@'$host'";
         return ERROR if $self->_db_execute_no_return_query($sql) != OK;
@@ -1120,15 +1142,19 @@ sub _db_setup_users {
 
     # Apply SSL requirement to both identities
     if ($ssl_required) {
-        for my $host(@hosts) {
-            my $sql =
-                  "ALTER USER '$user'\@'$host' REQUIRE SSL";
+        for my $host (@hosts) {
+            my $sql;
+            if ($is_old) {
+                # Old MariaDB: REQUIRE SSL in GRANT
+                $sql = "GRANT $perms ON *.* TO '$user'\@'$host' REQUIRE SSL";
+            } else {
+                $sql = "ALTER USER '$user'\@'$host' REQUIRE SSL";
+            }
             return ERROR if $self->_db_execute_no_return_query($sql) != OK;
         }
         PrintVerbose($_me."Tester user requires SSL (ssl_mode=$mode)");
     }
 
-    # Mark completion
     $self->{users_created} = TRUE;
     PrintVerbose($_me."Tester user created with permissions [$perms]");
 
