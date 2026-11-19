@@ -3,9 +3,9 @@ package TAF::ActionWrappers;
 # TAF::ActionWrappers
 #
 # Created: December 2025
-# Last Modified: August 2026
+# Last Modified: November 2026
 #
-# Version: 4.0
+# Version: 4.0.1
 #
 # This file is part of the Test Automation Framework (TAF).
 # Copyright (c) 2025-2026 MariaDB Foundation and Jonathan "jeb" Miller
@@ -654,24 +654,62 @@ sub ShutdownDbHard {
 # _EnsureInstallAndPlugin
 #
 # Purpose:
-#     Internal helper to guarantee both install resolution and plugin load.
+#     Internal helper to guarantee install resolution, database configuration,
+#     and database plugin readiness before a database action continues.
 #
 # Parameters:
 #     $ctx : Framework context handle.
 #
 # Behavior:
 #     - Calls _EnsureInstallResolved().
+#     - Calls _EnsureDbConfig() to resolve and generate the active database
+#       configuration.
 #     - Calls _EnsurePluginLoaded().
 #
 # Returns:
-#     OK    : both checks succeeded.
-#     ERROR : one or both checks failed.
+#     OK    : install, database configuration, and plugin checks succeeded.
+#     ERROR : any required step failed.
 #===============================================================================
 sub _EnsureInstallAndPlugin {
     my ($ctx) = @_;
 
     return ERROR if _EnsureInstallResolved($ctx) != OK;
+    return ERROR if _EnsureDbConfig($ctx) != OK;
     return ERROR if _EnsurePluginLoaded($ctx) != OK;
+
+    return OK;
+}
+
+#===============================================================================
+# _EnsureDbConfig
+#
+# Purpose:
+#     Resolve and generate the active database configuration before the
+#     database plugin is loaded or database initialization begins.
+#
+# Parameters:
+#     $ctx : Framework context handle.
+#
+# Behavior:
+#     - Delegates configuration resolution and generation to
+#       TAF::DatabaseConfigurationHandler::LoadAndBuildDBCFG().
+#     - Always rebuilds the database configuration using the configured
+#       source precedence.
+#     - Ensures db_config_file points to the newly generated configuration.
+#
+# Returns:
+#     OK    : database configuration was resolved and generated successfully.
+#     ERROR : database configuration resolution or generation failed.
+#===============================================================================
+sub _EnsureDbConfig {
+    my ($ctx) = @_;
+
+    my $rc = TAF::DatabaseConfigurationHandler::LoadAndBuildDBCFG($ctx);
+
+    if ($rc != OK) {
+        PrintError("Failed to resolve database configuration");
+        return ERROR;
+    }
 
     return OK;
 }
